@@ -1,0 +1,6 @@
+# 深圳薅羊毛日报 - 运行依赖
+# 注意：本项目【不需要】PyMuPDF / fitz / pandas / python-dotenv。
+# 实际只是纯网页抓取，仅需下面两个包（requests 抓取 + BeautifulSoup 解析）。
+# 密钥从同目录 .env 读取（手写解析，不依赖 python-dotenv）。
+requests>=2.31.0
+beautifulsoup4>=4.12.0

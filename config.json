@@ -1,0 +1,49 @@
+{
+  "webhook": "",
+  "pushplus_token": "",
+  "bendibao_biz": "",
+  "max_age_days": 30,
+  "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu"],
+  "select": {
+    "per_type": 10,
+    "max": 40,
+    "smzdm_per_type": 5,
+    "smzdm_cap": 10,
+    "yangmaocun_cap": 20,
+    "yangmaocun_max_age_days": 10,
+    "state_keep_buffer_days": 7
+  },
+  "xiaohongshu": {
+    "keywords": [
+      ["🥤 奶茶饮品", "深圳 冰饮 买一送一"],
+      ["🥤 奶茶饮品", "深圳 奶茶 免费"],
+      ["🎟️ 深圳活动", "深圳 免费活动"],
+      ["🎟️ 深圳活动", "深圳 市集"],
+      ["🎟️ 深圳活动", "深圳 快闪店"],
+      ["🎟️ 深圳活动", "深圳 展览 免费"]
+    ],
+    "window_days": 14,
+    "per_kw": 20,
+    "topic_neg": [
+      "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
+      "美甲", "美睫", "纹眉", "纹绣", "医美", "护肤", "化妆", "种草",
+      "穿搭", "ootd", "显瘦", "搭配", "减肥", "瘦身", "健身", "瑜伽",
+      "宠物", "撸猫", "猫", "狗", "孕期",
+      "租房", "买房", "装修", "楼盘", "学区",
+      "旅游", "攻略", "景点", "民宿", "出行", "log"
+    ],
+    "sz_landmarks": [
+      "深圳", "南山", "福田", "罗湖", "宝安", "龙岗", "龙华", "坪山", "盐田", "光明", "大鹏",
+      "前海", "坂田", "布吉", "西丽", "沙井", "福永", "观澜", "石岩", "公明", "松岗",
+      "蛇口", "车公庙", "华强北", "会展中心", "深圳湾", "欢乐海岸", "海岸城", "万象城",
+      "科技园", "后海", "腾讯"
+    ]
+  },
+  "union": {
+    "pdd": {"client_id": "", "client_secret": "", "pid": ""},
+    "taobao": {"appkey": "", "appsecret": "", "session": "", "pid": ""},
+    "jd": {"appkey": "", "appsecret": "", "union_id": "", "position_id": ""},
+    "suning": {"appkey": "", "appsecret": "", "pid": ""},
+    "vip": {"appkey": "", "appsecret": "", "pid": ""}
+  }
+}

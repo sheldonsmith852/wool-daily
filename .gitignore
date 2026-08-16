@@ -1,0 +1,23 @@
+# ===== 密钥（含 PushPlus token / 红狐 REDFOX_API_KEY）绝对不能提交 =====
+.env
+
+# ===== Python 运行时 =====
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# ===== 运行期产物（非源码，服务器上会重新生成）=====
+wool_state.json
+wool_log.txt
+wool_alert.txt
+wool_report.md
+wool_report.html
+wool_xhs_report.html
+
+# ===== 编辑器 / OS =====
+.DS_Store
+*.swp
+
+# ===== 项目内 WorkBuddy 记忆目录（非源码）=====
+.workbuddy/
