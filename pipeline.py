@@ -578,7 +578,7 @@ def _own_browser():
     """无外部 browser 时自用：启动并在退出时关闭一个 Playwright chromium。"""
     from playwright.sync_api import sync_playwright
     pcm = sync_playwright().start()
-    browser = pcm.chromium.launch()
+    browser = pcm.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage'])
     try:
         yield browser
     finally:
@@ -1176,7 +1176,7 @@ def main():
         if set(PW_SOURCES) & set(enabled):
             from playwright.sync_api import sync_playwright
             pw_ctx = sync_playwright().start()
-            shared_browser = pw_ctx.chromium.launch()
+            shared_browser = pw_ctx.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage'])
     except Exception as e:
         print("PW_SHARED_LAUNCH_FAIL fallback per-fetch:", e)
         shared_browser = None
