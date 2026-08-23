@@ -324,12 +324,17 @@ def fetch_smzdm():
             continue
         seen.add(link)
         iso = ""
+        pub_date = None
         ts = x.get("article_unix_date")
         if ts:
             try:
-                iso = _dt.datetime.fromtimestamp(int(ts)).date().isoformat()
+                pub_date = _dt.datetime.fromtimestamp(int(ts)).date()
+                iso = pub_date.isoformat()
             except Exception:
                 pass
+        # 仅保留今天+昨天发布的好价，过滤长期常青帖，避免该信源"老不变"
+        if pub_date is not None and (_dt.date.today() - pub_date).days > 1:
+            continue
         price = x.get("article_price") or ""
         detail = f"¥{price}" if price else ""
         deals.append({
