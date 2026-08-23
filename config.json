@@ -2,7 +2,7 @@
   "webhook": "",
   "pushplus_token": "",
   "bendibao_biz": "",
-  "max_age_days": 30,
+  "max_age_days": 7,
   "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu"],
   "select": {
     "per_type": 10,

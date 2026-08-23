@@ -922,8 +922,9 @@ def render(items, max_age=MAX_AGE_DAYS):
         lines.append("|---|---|---|---|")
         for d, is_new in groups[t]:
             pub = (d["date"][5:] if d.get("date") else "—") + " · " + age_label(d)
+            title = ("🆕 " + d["title"]) if is_new else d["title"]
             lines.append(
-                f"| {d['platform']} | {pub} | [{d['title']}]({d['url']}) "
+                f"| {d['platform']} | {pub} | [{title}]({d['url']}) "
                 f"| {d['confidence']} |"
             )
         lines.append("")
@@ -984,8 +985,9 @@ def render_bot_md(items, max_age=MAX_AGE_DAYS):
             continue
         lines = [f"## {t}（{len(groups[t])}）", ""]
         for d, is_new in groups[t]:
+            title = ("🆕 " + d["title"]) if is_new else d["title"]
             lines.append(
-                f"- [{d['title']}]({d['url']}) · {age_label(d)} · {d['confidence']}"
+                f"- [{title}]({d['url']}) · {age_label(d)} · {d['confidence']}"
             )
         lines.append("")
         blocks.append("\n".join(lines))
