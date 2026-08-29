@@ -689,7 +689,9 @@ def fetch_bendibao(browser=None):
                         r"考试|笔试|面试|准考证|查分|公考|考公|公务员|"
                         r"事业编|考编|编制|公职|报考|职业资格|资格证|"
                         r"职称|教资|教师资格|技能鉴定|师报名|证报名|"
-                        r"录用|上岗|校园招聘|社会招聘)")
+                        r"录用|上岗|校园招聘|社会招聘|开学第一课|"
+                        r"开学典礼|公益节目|电视开学典礼|中小学|"
+                        r"升学|成人高考|高考|电工证|考证|补习|网课)")
     URL = "https://sz.bendibao.com/"
     JS = """() => {
       const out=[];
@@ -712,13 +714,17 @@ def fetch_bendibao(browser=None):
         def _core(b):
             items = _pw_scrape(b, URL, JS, wait=2000, timeout=25000)
             for it in items:
-                t = it["title"]
-                if not EV.search(t):
+                raw = it["title"]
+                # 显示标题取首行并压平空白：去掉卡片内描述与换行，避免表格样式错乱
+                t = _re.sub(r"\s+", " ", raw.split("\n")[0]).strip()
+                # 过滤仍用完整文本（含描述），避免误杀仅标题无活动词、但描述含活动词的真实活动
+                t_match = _re.sub(r"\s+", " ", raw).strip()
+                if not EV.search(t_match):
                     continue
-                if NEG.search(t):
+                if NEG.search(t_match):
                     continue  # 优惠券类低质量，跳过
-                if BLOCK.search(t):
-                    continue  # 招聘/考试类民生专题，明确排除
+                if BLOCK.search(t_match):
+                    continue  # 招聘/考试/教育类民生专题，明确排除
                 # 日期：优先 URL 路径段（.../2026812/ → 2026-08-12），否则回退上下文文本
                 d = norm_date_url(it["url"]) or norm_date(it.get("ctx", ""))[0]
                 deals.append({
