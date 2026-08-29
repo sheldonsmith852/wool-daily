@@ -715,8 +715,8 @@ def fetch_bendibao(browser=None):
             items = _pw_scrape(b, URL, JS, wait=2000, timeout=25000)
             for it in items:
                 raw = it["title"]
-                # 显示标题取首行并压平空白：去掉卡片内描述与换行，避免表格样式错乱
-                t = _re.sub(r"\s+", " ", raw.split("\n")[0]).strip()
+                # 显示标题：压平所有空白（含换行）为单行，避免表格样式错乱/标题被内部换行截断
+                t = _re.sub(r"\s+", " ", raw).strip()
                 # 过滤仍用完整文本（含描述），避免误杀仅标题无活动词、但描述含活动词的真实活动
                 t_match = _re.sub(r"\s+", " ", raw).strip()
                 if not EV.search(t_match):
