@@ -679,9 +679,12 @@ def fetch_bendibao(browser=None):
     EV = _re.compile(r"(免费|活动|市集|展览|演出|比赛|派对|嘉年华|培训|"
                      r"交友|体验|亲子|手工|快闪|展会|音乐节|戏剧|工作坊|"
                      r"报名|周末活动|相亲|公益|集市)")
-    # 优惠券类（低质量，明确排除）：消费券/优惠券/代金券/满减/抢券/领券等
+    # 优惠券类（低质量，明确排除）：消费券/优惠券/代金券/满减/抢券/ * 券等
     NEG = _re.compile(r"(消费券|优惠券|代金券|满减|抢券|领券|券面|用券|"
                        r"发券|领消费券|优惠明细|优惠规则|适用门店)")
+    # 招聘/考试类（民生专题，明确排除）：招聘、招考、考试、公考、编制等
+    BLOCK = _re.compile(r"(招聘|招考|招录|考试|笔试|面试|准考证|查分|公务员|"
+                        r"事业编|考公|考编|教师招聘|校招|社招|应聘|求职|公职)")
     URL = "https://sz.bendibao.com/"
     JS = """() => {
       const out=[];
@@ -709,6 +712,8 @@ def fetch_bendibao(browser=None):
                     continue
                 if NEG.search(t):
                     continue  # 优惠券类低质量，跳过
+                if BLOCK.search(t):
+                    continue  # 招聘/考试类民生专题，明确排除
                 # 日期：优先 URL 路径段（.../2026812/ → 2026-08-12），否则回退上下文文本
                 d = norm_date_url(it["url"]) or norm_date(it.get("ctx", ""))[0]
                 deals.append({
