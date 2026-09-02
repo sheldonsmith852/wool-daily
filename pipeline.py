@@ -577,13 +577,29 @@ def fetch_xiaohongshu():
     return deals
 
 
-# ---- Playwright 复用：共用一个无头 chromium，避免每天重复启动 ----
+# ---- Playwright 复用：共用一个 chromium，避免每天重复启动 ----
+# 有界面模式（检测到 DISPLAY 时）用于绕过部分源（如深圳本地宝）对「无 user_data_dir 的
+# 临时启动浏览器」的反爬挑战：实测 bendibao 的 WAF 会拦截普通 launch（无头/有界面都拦），
+# 但放行「带持久化 user_data_dir 的有界面浏览器」。故新服务器跑 Xvfb 并设 DISPLAY 走此路径；
+# 旧服务器 cron 无 DISPLAY 则保持原无头逻辑，不受影响。
+PW_PROFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pw_profile")
+
+def _launch_browser(pw_ctx):
+    """按环境启动浏览器：有 DISPLAY → 有界面+持久化档案（绕过反爬）；否则无头。"""
+    headful = bool(os.environ.get("DISPLAY"))
+    if headful:
+        return pw_ctx.chromium.launch_persistent_context(
+            user_data_dir=PW_PROFILE, headless=False,
+            args=["--no-sandbox", "--disable-dev-shm-usage"])
+    return pw_ctx.chromium.launch(
+        headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+
 @contextmanager
 def _own_browser():
     """无外部 browser 时自用：启动并在退出时关闭一个 Playwright chromium。"""
     from playwright.sync_api import sync_playwright
     pcm = sync_playwright().start()
-    browser = pcm.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage'])
+    browser = _launch_browser(pcm)
     try:
         yield browser
     finally:
@@ -1199,7 +1215,7 @@ def main():
         if set(PW_SOURCES) & set(enabled):
             from playwright.sync_api import sync_playwright
             pw_ctx = sync_playwright().start()
-            shared_browser = pw_ctx.chromium.launch(args=['--no-sandbox','--disable-dev-shm-usage'])
+            shared_browser = _launch_browser(pw_ctx)
     except Exception as e:
         print("PW_SHARED_LAUNCH_FAIL fallback per-fetch:", e)
         shared_browser = None
