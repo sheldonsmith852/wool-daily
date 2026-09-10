@@ -617,6 +617,13 @@ MILKTEA_SIGNAL = re.compile(r"(联名|IP|限定|周边|典藏|隐藏款|第二�
 MILKTEA_BRAND = re.compile(r"(喜茶|奈雪|霸王茶姬|茶百道|蜜雪冰城|蜜雪|沪上阿姨|瑞幸|"
                            r"库迪|星巴克|古茗|CoCo|都可|乐乐茶|甜啦啦|益禾堂|书亦|"
                            r"7分甜|茶颜悦色|幸运咖|一点点|COCO|coco)", re.I)
+# 信息性硬闸门：必须是「有人在宣布一件事」的语境（官宣/开售/活动/周边）。
+# 用来滤掉「今天买了杯XX联名杯，被拒了」这类个人日常——它们同样含品牌+联名，
+# 但对蹲联名毫无 actionable 价值。词表放 config.json 的 milktea.info_pos 可调。
+MILKTEA_INFO = re.compile(r"(官宣|上线|开售|开抢|上市|发售|预售|预约|限量|限时|"
+                          r"今日|明天|明日|即将|下周|本周|推出|携手|合作|活动|"
+                          r"套餐|周边|兑换|领取|抢购|秒杀|首发|新品|登陆|全国|"
+                          r"门店|回归|来袭|定档|联名款|联名系列|正式|同步)")
 
 
 def get_milktea_cfg():
@@ -706,6 +713,9 @@ def fetch_milktea(browser=None):
     fandom_neg = mc.get("fandom_neg") or []
     fandom_re = (re.compile("(" + "|".join(re.escape(w) for w in fandom_neg) + ")")
                  if fandom_neg else None)
+    info_pos = mc.get("info_pos")
+    info_re = (re.compile("(" + "|".join(re.escape(w) for w in info_pos) + ")")
+               if info_pos else MILKTEA_INFO)
     own = browser is None
     try:
         if own:
@@ -757,15 +767,20 @@ def fetch_milktea(browser=None):
                         continue
                     if not MILKTEA_SIGNAL.search(txt):
                         continue
+                    if info_re and not info_re.search(txt):
+                        continue
                     who = ""
                     h3 = c.query_selector("h3.m-text-cut")
                     if h3:
                         who = re.sub(r"\s+", " ", (h3.inner_text() or "")).strip()
+                    # 标题取首句：在句号/换行/emoji 处断开，避免整段营销文案塞进表格
+                    first = re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)[0].strip()
+                    title = (first if len(first) >= 8 else txt)[:50]
                     deals.append({
                         "platform": "微博",
                         "category": "奶茶IP联名",
                         "city": "",
-                        "title": txt[:70],
+                        "title": title,
                         "detail": who,
                         "url": link,
                         "confidence": "🟡",
