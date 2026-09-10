@@ -577,7 +577,7 @@ def fetch_xiaohongshu():
     return deals
 
 
-# ---- 奶茶 IP 联名信源（复用红狐 REDFOX 接口，全国范围，不强制深圳）----
+# ---- 奶茶 IP 联名信源（免费版·Playwright 抓百度资讯，全国范围，不强制深圳）----
 MILKTEA_DEFAULTS = {
     "keywords": [
         ("🧋 奶茶联名", "奶茶 联名 IP"),
@@ -624,7 +624,7 @@ def get_milktea_cfg():
 
 
 def fetch_milktea(browser=None):
-    """奶茶 IP 联名信源（免费版：Playwright 抓 Bing 新闻公开搜索，覆盖「官宣型联名」）。
+    """奶茶 IP 联名信源（免费版：Playwright 抓 百度资讯 公开搜索，覆盖「官宣型联名」）。
     不再依赖红狐付费接口；复用 _launch_browser 机制（新服务器 DISPLAY+持久化档案绕过 WAF）。
     关键词覆盖主流品牌联名/限定周边/买赠；全国范围，不强制深圳。
     纯度闸门：必须同时含「饮品基础词」+「联名信号词」才保留。
@@ -644,18 +644,20 @@ def fetch_milktea(browser=None):
         for _, kw in mc["keywords"]:
             try:
                 q = _up.quote(kw)
-                url = f"https://www.bing.com/news/search?q={q}&qft=interval%3d%227%22&form=NWRFSH"
+                # 百度资讯搜索。原用 Bing 新闻搜索，但 www.bing.com/news/search 在中国区
+                # 会被强制跳转到 cn.bing.com 首页（无新闻结果页），实测恒返回 0 条，故换源。
+                url = f"https://www.baidu.com/s?tn=news&word={q}"
                 pg.goto(url, wait_until="domcontentloaded", timeout=25000)
                 pg.wait_for_timeout(2500)
-                cards = pg.query_selector_all("div.news-card")
+                cards = pg.query_selector_all("div.c-container")
                 if not cards:
-                    cards = pg.query_selector_all("article, .news-item, .algocore")
+                    cards = pg.query_selector_all("div.result, div.result-op")
                 for c in cards:
-                    a = c.query_selector("a[href]")
+                    a = c.query_selector("h3 a") or c.query_selector("a[href]")
                     if not a:
                         continue
                     link = a.get_attribute("href") or ""
-                    title = (a.inner_text() or "").strip()
+                    title = re.sub(r"\s+", " ", (a.inner_text() or "")).strip()
                     if not link or not title or len(title) < 5:
                         continue
                     if link in seen_urls:
@@ -669,7 +671,7 @@ def fetch_milktea(browser=None):
                     if not MILKTEA_SIGNAL.search(title):
                         continue
                     deals.append({
-                        "platform": "Bing新闻",
+                        "platform": "百度资讯",
                         "category": "奶茶IP联名",
                         "city": "",
                         "title": title,
