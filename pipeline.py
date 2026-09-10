@@ -577,18 +577,23 @@ def fetch_xiaohongshu():
     return deals
 
 
-# ---- 奶茶 IP 联名信源（免费版·Playwright 抓百度/360资讯双引擎，全国范围，不强制深圳）----
+# ---- 奶茶 IP 联名信源（微博实时搜索·免登录，全国范围，不强制深圳）----
+# 为什么不再用新闻搜索：百度/360/Bing 资讯都是「事后索引」，实测返回的多是数月前的
+# 回顾/复盘/黄牛案/售罄报道（最新一条普遍滞后 1~2 周），结构上拿不到「即将联名」。
+# 微博才是品牌官宣的第一现场；m.weibo.cn 移动端搜索免登录（PC 端 s.weibo.com 强制登录）。
+# 故改抓「实时」流（containerid type=61），并用 max_age_hours 只收新鲜内容，杜绝考古。
 MILKTEA_DEFAULTS = {
     "keywords": [
-        ("🧋 奶茶联名", "奶茶 联名 IP"),
-        ("🧋 奶茶联名", "奶茶 限定 周边"),
+        ("🧋 奶茶联名", "奶茶 联名"),
         ("🧋 奶茶联名", "喜茶 联名"),
         ("🧋 奶茶联名", "奈雪 联名"),
         ("🧋 奶茶联名", "霸王茶姬 联名"),
-        ("🧋 奶茶联名", "奶茶 买一送一 第二杯"),
-        ("🧋 奶茶联名", "奶茶 新品 联名"),
+        ("🧋 奶茶联名", "瑞幸 联名"),
+        ("🧋 奶茶联名", "古茗 联名"),
+        ("🧋 奶茶联名", "茶百道 联名"),
     ],
     "window_days": 14,
+    "max_age_hours": 48,  # 只收近 48 小时的实时微博
     "per_kw": 15,
     "topic_neg": [
         "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
@@ -598,13 +603,20 @@ MILKTEA_DEFAULTS = {
         "租房", "买房", "装修", "楼盘", "学区",
         "旅游", "攻略", "景点", "民宿", "出行",
     ],
+    # 饭圈/明星向噪音：常带「联名奶茶」字样但与品牌联名无关（例：明星送奶茶应援）
+    "fandom_neg": [
+        "超话", "控评", "打榜", "应援", "后援会", "青春大使", "代言人",
+        "粉丝群", "爱豆", "追星", "接机", "生日应援", "出道", "应援色",
+    ],
 }
-# 奶茶联名正向必含信号（必须有「联名/限定/周边/买赠」语义才保留，保证纯度）
-MILKTEA_SIGNAL = re.compile(r"(联名|IP|限定|周边|典藏|隐藏款|第二杯|买一送一|赠|送|盲盒|"
-                            r"收藏卡|联名款|联名周边|新品|上新)")
-# 饮品基础词：排除纯美食探店（虽带「赠」但非饮品）
-MILKTEA_DRINK = re.compile(r"(奶茶|果茶|柠檬茶|咖啡|饮品|喜茶|奈雪|霸王茶姬|茶百道|蜜雪|"
-                           r"沪上阿姨|瑞幸|星巴克|库迪|幸运咖|特调|杨枝甘露)")
+# 联名正向信号：必须有「联名/限定/周边/买赠」语义才保留
+MILKTEA_SIGNAL = re.compile(r"(联名|IP|限定|周边|典藏|隐藏款|第二杯|买一送一|盲盒|"
+                            r"收藏卡|新品|上新)")
+# 品牌硬闸门：必须出现具体品牌名。微博上「我看见联名的奶茶店了」这类个人日常
+# 也含「奶茶+联名」，只有强制品牌名才能滤掉（宁缺毋滥，保证每条都可蹲）。
+MILKTEA_BRAND = re.compile(r"(喜茶|奈雪|霸王茶姬|茶百道|蜜雪冰城|蜜雪|沪上阿姨|瑞幸|"
+                           r"库迪|星巴克|古茗|CoCo|都可|乐乐茶|甜啦啦|益禾堂|书亦|"
+                           r"7分甜|茶颜悦色|幸运咖|一点点|COCO|coco)", re.I)
 
 
 def get_milktea_cfg():
@@ -615,6 +627,10 @@ def get_milktea_cfg():
         cfg["window_days"] = u["window_days"]
     if isinstance(u.get("per_kw"), int) and u["per_kw"] > 0:
         cfg["per_kw"] = u["per_kw"]
+    if isinstance(u.get("max_age_hours"), int) and u["max_age_hours"] > 0:
+        cfg["max_age_hours"] = u["max_age_hours"]
+    if u.get("fandom_neg") and isinstance(u["fandom_neg"], list):
+        cfg["fandom_neg"] = u["fandom_neg"]
     if u.get("keywords"):
         cfg["keywords"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
                            for x in u["keywords"]]
@@ -623,41 +639,73 @@ def get_milktea_cfg():
     return cfg
 
 
-# 奶茶联名检索引擎：(显示名, URL 模板, 结果容器选择器)。双引擎互为备援。
-MILKTEA_ENGINES = [
-    ("百度资讯", "https://www.baidu.com/s?tn=news&word={q}", "div.c-container"),
-    ("360资讯", "https://news.so.com/ns?q={q}", "li.res-list"),
-]
+# 微博「实时」搜索流（type=61）。m.weibo.cn 移动端免登录；PC 端 s.weibo.com 会强制登录。
+MILKTEA_WB_URL = "https://m.weibo.cn/search?containerid={cid}"
 
 
 def _page_blocked(pg):
-    """判断当前页是否被反爬验证页顶替。命中则该引擎本轮后续关键词直接跳过，避免无效请求。"""
+    """判断当前页是否被反爬验证页/登录墙顶替。命中则本轮后续关键词直接跳过，避免无效请求。"""
     try:
         u = (pg.url or "").lower()
     except Exception:
         u = ""
-    if any(k in u for k in ("wappass", "captcha", "verify")):
+    if any(k in u for k in ("wappass", "captcha", "verify", "passport", "signin", "login")):
         return True
     try:
         t = pg.title() or ""
     except Exception:
         t = ""
-    return any(k in t for k in ("安全验证", "访问异常", "机器人", "请输入验证码"))
+    return any(k in t for k in ("安全验证", "访问异常", "机器人", "请输入验证码", "登录"))
+
+
+def _wb_rel_time(s, now):
+    """把微博相对时间解析为 datetime，解析不了返回 None（无法判时效的条目宁可丢弃）。
+    支持：X秒前 / X分钟前 / X小时前 / X天前 / 今天 HH:MM / 昨天 HH:MM / MM-DD / YYYY-MM-DD。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    for unit, kw in (("seconds", "秒"), ("minutes", "分钟"), ("hours", "小时"), ("days", "天")):
+        m = re.match(r"^(\d+)%s前$" % kw, s)
+        if m:
+            return now - _dt.timedelta(**{unit: int(m.group(1))})
+    if s.startswith("今天"):
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if s.startswith("昨天"):
+        return (now - _dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
+    if m:
+        try:
+            return _dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+    m = re.match(r"^(\d{1,2})-(\d{1,2})$", s)
+    if m:
+        try:
+            return _dt.datetime(now.year, int(m.group(1)), int(m.group(2)))
+        except Exception:
+            return None
+    return None
 
 
 def fetch_milktea(browser=None):
-    """奶茶 IP 联名信源（免费版：Playwright 抓公开新闻搜索，覆盖「官宣型联名」）。
-    双引擎合并去重：百度资讯（质量高）+ 360资讯（抗验证强），任一被验证另一个顶住。
-    历史踩坑：Bing 新闻搜索在中国区被强制跳转 cn.bing.com 首页（无结果页，恒 0 条）；
-    搜狗 news 入口会跳通用搜索页、返回与查询无关的结果 —— 两者均不使用。
-    复用 _launch_browser 机制（新服务器 DISPLAY+持久化档案绕过 WAF）。
-    纯度闸门：必须同时含「饮品基础词」+「联名信号词」才保留。
+    """奶茶 IP 联名信源：抓微博「实时」搜索流（m.weibo.cn，免登录）。
+
+    为什么是微博：品牌联名的官宣/开售第一现场在微博，而新闻搜索是事后索引，
+    实测拿到的多是数月前的复盘/黄牛案/售罄报道，拿不到「即将联名」。
+    三重闸门保证每条都可蹲：①时效 ≤ max_age_hours（默认 48h，杜绝考古）
+    ②必须出现具体品牌名 ③必须含联名语义。另过滤饭圈/明星应援类噪音。
+    置信度标 🟡：微博为 UGC/官宣混合，权威性低于新闻稿，需自行核对。
     可接收外部 browser（shared_browser）复用，避免重复启动 chromium。"""
     import urllib.parse as _up
     deals = []
     seen_urls = set()
     mc = get_milktea_cfg()
+    now = _dt.datetime.now()
+    cutoff = now - _dt.timedelta(hours=mc["max_age_hours"])
     topic_neg_re = re.compile("(" + "|".join(re.escape(w) for w in mc["topic_neg"]) + ")")
+    fandom_neg = mc.get("fandom_neg") or []
+    fandom_re = (re.compile("(" + "|".join(re.escape(w) for w in fandom_neg) + ")")
+                 if fandom_neg else None)
     own = browser is None
     try:
         if own:
@@ -665,66 +713,70 @@ def fetch_milktea(browser=None):
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
-        blocked = set()  # 已被验证页封的引擎，本轮不再请求
+        blocked = False  # 微博一旦出现登录墙/验证页，本轮后续关键词直接跳过
         for _, kw in mc["keywords"]:
-            q = _up.quote(kw)
-            for eng, tmpl, cont_sel in MILKTEA_ENGINES:
-                if eng in blocked:
-                    continue
-                try:
-                    pg.goto(tmpl.format(q=q), wait_until="domcontentloaded", timeout=25000)
-                    pg.wait_for_timeout(2500)
-                    if _page_blocked(pg):
-                        blocked.add(eng)
-                        print("MILKTEA_BLOCKED", eng, kw)
+            if blocked:
+                break
+            # type=61 = 实时流（按时间倒序）。综合流(type=1)按热度排，会返回多年前内容。
+            cid = _up.quote("100103type=61&q=" + kw)
+            try:
+                pg.goto(MILKTEA_WB_URL.format(cid=cid),
+                        wait_until="domcontentloaded", timeout=25000)
+                pg.wait_for_timeout(3000)
+                if _page_blocked(pg):
+                    blocked = True
+                    print("MILKTEA_BLOCKED", kw)
+                    break
+                for c in pg.query_selector_all("div.card-wrap"):
+                    wt = c.query_selector(".weibo-text")
+                    if not wt:
+                        continue  # 无正文的是超话/用户卡片，直接跳过
+                    txt = re.sub(r"\s+", " ", (wt.inner_text() or "")).strip()
+                    if len(txt) < 10:
                         continue
-                    cards = pg.query_selector_all(cont_sel)
-                    if not cards:
-                        cards = pg.query_selector_all("div.result, div.result-op")
-                    for c in cards:
-                        a = c.query_selector("a[href]")
-                        if not a:
-                            continue
-                        link = a.get_attribute("href") or ""
-                        # 标题优先取 a[title]（干净），退回 h3 文本，再退回 a 文本
-                        title = (a.get_attribute("title") or "").strip()
-                        if not title:
-                            h3 = c.query_selector("h3")
-                            title = ((h3.inner_text() if h3 else "") or a.inner_text() or "")
-                        title = re.sub(r"\s+", " ", title).strip()
-                        if not link or not title or len(title) < 5:
-                            continue
-                        if link.startswith("//"):
-                            link = "https:" + link
-                        elif link.startswith("/"):
-                            _o = _up.urlparse(pg.url)
-                            link = f"{_o.scheme}://{_o.netloc}{link}"
-                        if link in seen_urls:
-                            continue
-                        seen_urls.add(link)
-                        if topic_neg_re.search(title):
-                            continue
-                        # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
-                        if not MILKTEA_DRINK.search(title):
-                            continue
-                        if not MILKTEA_SIGNAL.search(title):
-                            continue
-                        deals.append({
-                            "platform": eng,
-                            "category": "奶茶IP联名",
-                            "city": "",
-                            "title": title,
-                            "detail": "",
-                            "url": link,
-                            "confidence": "🟢",
-                            "source": "milktea",
-                            "date": "",
-                            "date_raw": "",
-                            "_force_type": "🧋 奶茶联名",
-                        })
-                except Exception as e:
-                    print("MILKTEA_RUN_ERR", eng, kw, e)
-                    continue
+                    te = c.query_selector("span.time")
+                    tstr = (te.inner_text() or "").strip() if te else ""
+                    dt = _wb_rel_time(tstr, now)
+                    # 时效闸门：无时间或超时一律丢弃，这是「不出现考古新闻」的关键
+                    if dt is None or dt < cutoff:
+                        continue
+                    a = c.query_selector('a[href*="/status/"]')
+                    link = (a.get_attribute("href") or "") if a else ""
+                    if not link:
+                        continue
+                    if link.startswith("/"):
+                        link = "https://m.weibo.cn" + link
+                    if link in seen_urls:
+                        continue
+                    seen_urls.add(link)
+                    if topic_neg_re.search(txt):
+                        continue
+                    if fandom_re and fandom_re.search(txt):
+                        continue
+                    if not MILKTEA_BRAND.search(txt):
+                        continue
+                    if not MILKTEA_SIGNAL.search(txt):
+                        continue
+                    who = ""
+                    h3 = c.query_selector("h3.m-text-cut")
+                    if h3:
+                        who = re.sub(r"\s+", " ", (h3.inner_text() or "")).strip()
+                    deals.append({
+                        "platform": "微博",
+                        "category": "奶茶IP联名",
+                        "city": "",
+                        "title": txt[:70],
+                        "detail": who,
+                        "url": link,
+                        "confidence": "🟡",
+                        "source": "milktea",
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "date_raw": tstr,
+                        "_force_type": "🧋 奶茶联名",
+                    })
+            except Exception as e:
+                print("MILKTEA_RUN_ERR", kw, e)
+                continue
     finally:
         if own and browser is not None:
             try:
