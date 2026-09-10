@@ -577,7 +577,7 @@ def fetch_xiaohongshu():
     return deals
 
 
-# ---- 奶茶 IP 联名信源（免费版·Playwright 抓百度资讯，全国范围，不强制深圳）----
+# ---- 奶茶 IP 联名信源（免费版·Playwright 抓百度/360资讯双引擎，全国范围，不强制深圳）----
 MILKTEA_DEFAULTS = {
     "keywords": [
         ("🧋 奶茶联名", "奶茶 联名 IP"),
@@ -623,10 +623,34 @@ def get_milktea_cfg():
     return cfg
 
 
+# 奶茶联名检索引擎：(显示名, URL 模板, 结果容器选择器)。双引擎互为备援。
+MILKTEA_ENGINES = [
+    ("百度资讯", "https://www.baidu.com/s?tn=news&word={q}", "div.c-container"),
+    ("360资讯", "https://news.so.com/ns?q={q}", "li.res-list"),
+]
+
+
+def _page_blocked(pg):
+    """判断当前页是否被反爬验证页顶替。命中则该引擎本轮后续关键词直接跳过，避免无效请求。"""
+    try:
+        u = (pg.url or "").lower()
+    except Exception:
+        u = ""
+    if any(k in u for k in ("wappass", "captcha", "verify")):
+        return True
+    try:
+        t = pg.title() or ""
+    except Exception:
+        t = ""
+    return any(k in t for k in ("安全验证", "访问异常", "机器人", "请输入验证码"))
+
+
 def fetch_milktea(browser=None):
-    """奶茶 IP 联名信源（免费版：Playwright 抓 百度资讯 公开搜索，覆盖「官宣型联名」）。
-    不再依赖红狐付费接口；复用 _launch_browser 机制（新服务器 DISPLAY+持久化档案绕过 WAF）。
-    关键词覆盖主流品牌联名/限定周边/买赠；全国范围，不强制深圳。
+    """奶茶 IP 联名信源（免费版：Playwright 抓公开新闻搜索，覆盖「官宣型联名」）。
+    双引擎合并去重：百度资讯（质量高）+ 360资讯（抗验证强），任一被验证另一个顶住。
+    历史踩坑：Bing 新闻搜索在中国区被强制跳转 cn.bing.com 首页（无结果页，恒 0 条）；
+    搜狗 news 入口会跳通用搜索页、返回与查询无关的结果 —— 两者均不使用。
+    复用 _launch_browser 机制（新服务器 DISPLAY+持久化档案绕过 WAF）。
     纯度闸门：必须同时含「饮品基础词」+「联名信号词」才保留。
     可接收外部 browser（shared_browser）复用，避免重复启动 chromium。"""
     import urllib.parse as _up
@@ -641,51 +665,66 @@ def fetch_milktea(browser=None):
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
+        blocked = set()  # 已被验证页封的引擎，本轮不再请求
         for _, kw in mc["keywords"]:
-            try:
-                q = _up.quote(kw)
-                # 百度资讯搜索。原用 Bing 新闻搜索，但 www.bing.com/news/search 在中国区
-                # 会被强制跳转到 cn.bing.com 首页（无新闻结果页），实测恒返回 0 条，故换源。
-                url = f"https://www.baidu.com/s?tn=news&word={q}"
-                pg.goto(url, wait_until="domcontentloaded", timeout=25000)
-                pg.wait_for_timeout(2500)
-                cards = pg.query_selector_all("div.c-container")
-                if not cards:
-                    cards = pg.query_selector_all("div.result, div.result-op")
-                for c in cards:
-                    a = c.query_selector("h3 a") or c.query_selector("a[href]")
-                    if not a:
+            q = _up.quote(kw)
+            for eng, tmpl, cont_sel in MILKTEA_ENGINES:
+                if eng in blocked:
+                    continue
+                try:
+                    pg.goto(tmpl.format(q=q), wait_until="domcontentloaded", timeout=25000)
+                    pg.wait_for_timeout(2500)
+                    if _page_blocked(pg):
+                        blocked.add(eng)
+                        print("MILKTEA_BLOCKED", eng, kw)
                         continue
-                    link = a.get_attribute("href") or ""
-                    title = re.sub(r"\s+", " ", (a.inner_text() or "")).strip()
-                    if not link or not title or len(title) < 5:
-                        continue
-                    if link in seen_urls:
-                        continue
-                    seen_urls.add(link)
-                    if topic_neg_re.search(title):
-                        continue
-                    # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
-                    if not MILKTEA_DRINK.search(title):
-                        continue
-                    if not MILKTEA_SIGNAL.search(title):
-                        continue
-                    deals.append({
-                        "platform": "百度资讯",
-                        "category": "奶茶IP联名",
-                        "city": "",
-                        "title": title,
-                        "detail": "",
-                        "url": link,
-                        "confidence": "🟢",
-                        "source": "milktea",
-                        "date": "",
-                        "date_raw": "",
-                        "_force_type": "🧋 奶茶联名",
-                    })
-            except Exception as e:
-                print("MILKTEA_RUN_ERR", kw, e)
-                continue
+                    cards = pg.query_selector_all(cont_sel)
+                    if not cards:
+                        cards = pg.query_selector_all("div.result, div.result-op")
+                    for c in cards:
+                        a = c.query_selector("a[href]")
+                        if not a:
+                            continue
+                        link = a.get_attribute("href") or ""
+                        # 标题优先取 a[title]（干净），退回 h3 文本，再退回 a 文本
+                        title = (a.get_attribute("title") or "").strip()
+                        if not title:
+                            h3 = c.query_selector("h3")
+                            title = ((h3.inner_text() if h3 else "") or a.inner_text() or "")
+                        title = re.sub(r"\s+", " ", title).strip()
+                        if not link or not title or len(title) < 5:
+                            continue
+                        if link.startswith("//"):
+                            link = "https:" + link
+                        elif link.startswith("/"):
+                            _o = _up.urlparse(pg.url)
+                            link = f"{_o.scheme}://{_o.netloc}{link}"
+                        if link in seen_urls:
+                            continue
+                        seen_urls.add(link)
+                        if topic_neg_re.search(title):
+                            continue
+                        # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
+                        if not MILKTEA_DRINK.search(title):
+                            continue
+                        if not MILKTEA_SIGNAL.search(title):
+                            continue
+                        deals.append({
+                            "platform": eng,
+                            "category": "奶茶IP联名",
+                            "city": "",
+                            "title": title,
+                            "detail": "",
+                            "url": link,
+                            "confidence": "🟢",
+                            "source": "milktea",
+                            "date": "",
+                            "date_raw": "",
+                            "_force_type": "🧋 奶茶联名",
+                        })
+                except Exception as e:
+                    print("MILKTEA_RUN_ERR", eng, kw, e)
+                    continue
     finally:
         if own and browser is not None:
             try:
