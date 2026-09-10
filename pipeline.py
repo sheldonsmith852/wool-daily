@@ -170,7 +170,7 @@ TYPE_RULES = [
     ("🚗 交通出行", ["机票", "打车", "加油", "高铁", "出行", "携程",
                    "航班", "滴滴", "加油卡"]),
 ]
-TYPE_ORDER = ["🥤 奶茶饮品", "🍜 餐饮美食", "🛵 外卖红包", "💰 支付立减",
+TYPE_ORDER = ["🥤 奶茶饮品", "🧋 奶茶联名", "🍜 餐饮美食", "🛵 外卖红包", "💰 支付立减",
               "🛒 电商券", "🚗 交通出行", "🎟️ 深圳活动", "📦 其他"]
 BLOCKED_TYPES = {"🏨 酒店住宿", "🏞️ 景区门票", "🎓 教育研学"}
 
@@ -574,6 +574,139 @@ def fetch_xiaohongshu():
                 "interactive_count": a.get("interactiveCount", 0) or 0,
             })
     print(f"XHS_OK 抓取 {len(deals)} 条（{len(seen_urls)} 唯一链接）")
+    return deals
+
+
+# ---- 奶茶 IP 联名信源（复用红狐 REDFOX 接口，全国范围，不强制深圳）----
+MILKTEA_DEFAULTS = {
+    "keywords": [
+        ("🧋 奶茶联名", "奶茶 联名 IP"),
+        ("🧋 奶茶联名", "奶茶 限定 周边"),
+        ("🧋 奶茶联名", "喜茶 联名"),
+        ("🧋 奶茶联名", "奈雪 联名"),
+        ("🧋 奶茶联名", "霸王茶姬 联名"),
+        ("🧋 奶茶联名", "奶茶 买一送一 第二杯"),
+        ("🧋 奶茶联名", "奶茶 新品 联名"),
+    ],
+    "window_days": 14,
+    "per_kw": 15,
+    "topic_neg": [
+        "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
+        "美甲", "美睫", "纹眉", "纹绣", "医美", "护肤", "化妆", "种草",
+        "穿搭", "ootd", "显瘦", "搭配", "减肥", "瘦身", "健身", "瑜伽",
+        "宠物", "撸猫", "猫", "狗", "孕期",
+        "租房", "买房", "装修", "楼盘", "学区",
+        "旅游", "攻略", "景点", "民宿", "出行",
+    ],
+}
+# 奶茶联名正向必含信号（必须有「联名/限定/周边/买赠」语义才保留，保证纯度）
+MILKTEA_SIGNAL = re.compile(r"(联名|IP|限定|周边|典藏|隐藏款|第二杯|买一送一|赠|送|盲盒|"
+                            r"收藏卡|联名款|联名周边|新品|上新)")
+# 饮品基础词：排除纯美食探店（虽带「赠」但非饮品）
+MILKTEA_DRINK = re.compile(r"(奶茶|果茶|柠檬茶|咖啡|饮品|喜茶|奈雪|霸王茶姬|茶百道|蜜雪|"
+                           r"沪上阿姨|瑞幸|星巴克|库迪|幸运咖|特调|杨枝甘露)")
+
+
+def get_milktea_cfg():
+    """奶茶联名信源配置：config.json 的 milktea 段覆盖默认值（改词调参不用碰代码）。"""
+    cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in MILKTEA_DEFAULTS.items()}
+    u = (load_config() or {}).get("milktea", {}) or {}
+    if isinstance(u.get("window_days"), int) and u["window_days"] > 0:
+        cfg["window_days"] = u["window_days"]
+    if isinstance(u.get("per_kw"), int) and u["per_kw"] > 0:
+        cfg["per_kw"] = u["per_kw"]
+    if u.get("keywords"):
+        cfg["keywords"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
+                           for x in u["keywords"]]
+    if u.get("topic_neg") and isinstance(u["topic_neg"], list):
+        cfg["topic_neg"] = u["topic_neg"]
+    return cfg
+
+
+def fetch_milktea():
+    """奶茶 IP 联名信源（红狐 REDFOX 接口）：全国范围抓取品牌联名/限定周边/买赠情报。
+    与 fetch_xiaohongshu 共用同一 REDFOX 通道与脚本，但：
+      - 关键词面向「联名/IP/限定/周边」；
+      - 不强制深圳地名（联名是全国性品牌活动，限地名会漏掉绝大多数）；
+      - 需同时命中「饮品基础词」+「联名信号词」才保留，保证纯度。
+    前置：REDFOX_API_KEY 环境变量 + XHS_SCRIPT 存在（与小红书信源同源）。"""
+    if not os.environ.get("REDFOX_API_KEY"):
+        print("MILKTEA_SKIP 未配置 REDFOX_API_KEY")
+        return []
+    if not os.path.exists(XHS_SCRIPT):
+        print("MILKTEA_SKIP 脚本缺失", XHS_SCRIPT)
+        return []
+    deals = []
+    seen_urls = set()
+    mc = get_milktea_cfg()
+    topic_neg_re = re.compile("(" + "|".join(re.escape(w) for w in mc["topic_neg"]) + ")")
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=mc["window_days"])
+    out_html = os.path.join(tempfile.gettempdir(), "wool_milktea_report.html")
+    for _, kw in mc["keywords"]:
+        try:
+            r = subprocess.run(
+                [sys.executable, XHS_SCRIPT, "--keyword", kw,
+                 "--start-date", start.isoformat(),
+                 "--end-date", end.isoformat(),
+                 "--page-num", "1", "--page-size", "50", "--max-items", "50",
+                 "--output-file", out_html],
+                capture_output=True, text=True, timeout=90,
+                env=os.environ.copy())
+        except Exception as e:
+            print("MILKTEA_RUN_ERR", kw, e)
+            continue
+        if r.returncode != 0:
+            print("MILKTEA_ERR", kw, (r.stderr or "").strip()[:200])
+            continue
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            print("MILKTEA_JSON_ERR", kw, (r.stdout or "")[:200])
+            continue
+        for a in data.get("items", [])[:mc["per_kw"]]:
+            url = a.get("noteLink") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            title = (a.get("title") or "").strip()
+            if len(title) < 5:
+                continue
+            desc = a.get("desc") or ""
+            blob = title + "\n" + desc
+            if XHS_NEG.search(blob):
+                continue
+            if topic_neg_re.search(blob):
+                continue
+            # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
+            if not MILKTEA_DRINK.search(blob):
+                continue
+            if not MILKTEA_SIGNAL.search(blob):
+                continue
+            date_val = ""
+            ct = a.get("createTime") or ""
+            if ct:
+                try:
+                    date_val = ct.split(" ")[0]
+                    _dt.date.fromisoformat(date_val)
+                except (ValueError, AttributeError):
+                    date_val = ""
+            deals.append({
+                "platform": "小红书",
+                "category": "奶茶IP联名",
+                "city": "",
+                "title": title,
+                "detail": desc[:120],
+                "url": url,
+                "confidence": "🟢",
+                "source": "milktea",
+                "date": date_val,
+                "date_raw": ct,
+                "_force_type": "🧋 奶茶联名",
+                "like_count": a.get("likedCount", 0) or 0,
+                "interactive_count": a.get("interactiveCount", 0) or 0,
+            })
+    print(f"MILKTEA_OK 抓取 {len(deals)} 条（{len(seen_urls)} 唯一链接）")
     return deals
 
 
@@ -1191,6 +1324,7 @@ def main():
         "icbc": fetch_icbc,
         "bendibao": fetch_bendibao,
         "xiaohongshu": fetch_xiaohongshu,
+        "milktea": fetch_milktea,
     }
     enabled = cfg.get("enabled_sources") or list(SOURCES.keys())
     PW_SOURCES = ("icbc", "bendibao")  # Playwright 源：共用一个 chromium

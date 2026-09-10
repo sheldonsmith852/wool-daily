@@ -3,7 +3,7 @@
   "pushplus_token": "",
   "bendibao_biz": "",
   "max_age_days": 7,
-  "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu"],
+  "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu", "milktea"],
   "select": {
     "per_type": 10,
     "max": 40,
@@ -45,5 +45,26 @@
     "jd": {"appkey": "", "appsecret": "", "union_id": "", "position_id": ""},
     "suning": {"appkey": "", "appsecret": "", "pid": ""},
     "vip": {"appkey": "", "appsecret": "", "pid": ""}
+  },
+  "milktea": {
+    "keywords": [
+      ["🧋 奶茶联名", "奶茶 联名 IP"],
+      ["🧋 奶茶联名", "奶茶 限定 周边"],
+      ["🧋 奶茶联名", "喜茶 联名"],
+      ["🧋 奶茶联名", "奈雪 联名"],
+      ["🧋 奶茶联名", "霸王茶姬 联名"],
+      ["🧋 奶茶联名", "奶茶 买一送一 第二杯"],
+      ["🧋 奶茶联名", "奶茶 新品 联名"]
+    ],
+    "window_days": 14,
+    "per_kw": 15,
+    "topic_neg": [
+      "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
+      "美甲", "美睫", "纹眉", "纹绣", "医美", "护肤", "化妆", "种草",
+      "穿搭", "ootd", "显瘦", "搭配", "减肥", "瘦身", "健身", "瑜伽",
+      "宠物", "撸猫", "猫", "狗", "孕期",
+      "租房", "买房", "装修", "楼盘", "学区",
+      "旅游", "攻略", "景点", "民宿", "出行"
+    ]
   }
 }
