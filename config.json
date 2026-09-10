@@ -5,7 +5,7 @@
   "max_age_days": 7,
   "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu", "milktea"],
   "select": {
-    "per_type": 10,
+    "per_type": 5,
     "max": 40,
     "smzdm_per_type": 5,
     "smzdm_cap": 10,

@@ -1026,8 +1026,12 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
         if budget_t <= 0:
             continue
         for d in by_type.get(t, []):
-            if id(d) in seen_ids or budget_t <= 0 or len(out) >= sc["max"]:
+            if budget_t <= 0 or len(out) >= sc["max"]:
                 break
+            if id(d) in seen_ids:
+                # 保底阶段已放入的项要跳过继续找，不能用 break（否则该类型整体停补，
+                # 导致所有走「每源保底 2 条」的信源被压到只剩 2 条）。
+                continue
             out.append(d)
             seen_ids.add(id(d))
             budget_t -= 1
