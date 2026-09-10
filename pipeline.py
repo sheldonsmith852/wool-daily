@@ -773,9 +773,24 @@ def fetch_milktea(browser=None):
                     h3 = c.query_selector("h3.m-text-cut")
                     if h3:
                         who = re.sub(r"\s+", " ", (h3.inner_text() or "")).strip()
-                    # 标题取首句：在句号/换行/emoji 处断开，避免整段营销文案塞进表格
-                    first = re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)[0].strip()
-                    title = (first if len(first) >= 8 else txt)[:50]
+                    # 标题选「同时含品牌+联名信号」的第一个句子（信息密度最高）；
+                    # 退回含品牌的句子，再退回首句。避免整段营销文案塞进表格。
+                    sents = [s.strip() for s in
+                             re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)
+                             if len(s.strip()) >= 6]
+                    title = ""
+                    for _s in sents:
+                        if MILKTEA_BRAND.search(_s) and MILKTEA_SIGNAL.search(_s):
+                            title = _s
+                            break
+                    if not title:
+                        for _s in sents:
+                            if MILKTEA_BRAND.search(_s):
+                                title = _s
+                                break
+                    if not title:
+                        title = sents[0] if sents else txt
+                    title = title[:50]
                     deals.append({
                         "platform": "微博",
                         "category": "奶茶IP联名",
