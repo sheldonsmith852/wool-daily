@@ -623,90 +623,74 @@ def get_milktea_cfg():
     return cfg
 
 
-def fetch_milktea():
-    """奶茶 IP 联名信源（红狐 REDFOX 接口）：全国范围抓取品牌联名/限定周边/买赠情报。
-    与 fetch_xiaohongshu 共用同一 REDFOX 通道与脚本，但：
-      - 关键词面向「联名/IP/限定/周边」；
-      - 不强制深圳地名（联名是全国性品牌活动，限地名会漏掉绝大多数）；
-      - 需同时命中「饮品基础词」+「联名信号词」才保留，保证纯度。
-    前置：REDFOX_API_KEY 环境变量 + XHS_SCRIPT 存在（与小红书信源同源）。"""
-    if not os.environ.get("REDFOX_API_KEY"):
-        print("MILKTEA_SKIP 未配置 REDFOX_API_KEY")
-        return []
-    if not os.path.exists(XHS_SCRIPT):
-        print("MILKTEA_SKIP 脚本缺失", XHS_SCRIPT)
-        return []
+def fetch_milktea(browser=None):
+    """奶茶 IP 联名信源（免费版：Playwright 抓 Bing 新闻公开搜索，覆盖「官宣型联名」）。
+    不再依赖红狐付费接口；复用 _launch_browser 机制（新服务器 DISPLAY+持久化档案绕过 WAF）。
+    关键词覆盖主流品牌联名/限定周边/买赠；全国范围，不强制深圳。
+    纯度闸门：必须同时含「饮品基础词」+「联名信号词」才保留。
+    可接收外部 browser（shared_browser）复用，避免重复启动 chromium。"""
+    import urllib.parse as _up
     deals = []
     seen_urls = set()
     mc = get_milktea_cfg()
     topic_neg_re = re.compile("(" + "|".join(re.escape(w) for w in mc["topic_neg"]) + ")")
-    end = _dt.date.today()
-    start = end - _dt.timedelta(days=mc["window_days"])
-    out_html = os.path.join(tempfile.gettempdir(), "wool_milktea_report.html")
-    for _, kw in mc["keywords"]:
-        try:
-            r = subprocess.run(
-                [sys.executable, XHS_SCRIPT, "--keyword", kw,
-                 "--start-date", start.isoformat(),
-                 "--end-date", end.isoformat(),
-                 "--page-num", "1", "--page-size", "50", "--max-items", "50",
-                 "--output-file", out_html],
-                capture_output=True, text=True, timeout=90,
-                env=os.environ.copy())
-        except Exception as e:
-            print("MILKTEA_RUN_ERR", kw, e)
-            continue
-        if r.returncode != 0:
-            print("MILKTEA_ERR", kw, (r.stderr or "").strip()[:200])
-            continue
-        try:
-            data = json.loads(r.stdout)
-        except json.JSONDecodeError:
-            print("MILKTEA_JSON_ERR", kw, (r.stdout or "")[:200])
-            continue
-        for a in data.get("items", [])[:mc["per_kw"]]:
-            url = a.get("noteLink") or ""
-            if not url or url in seen_urls:
+    own = browser is None
+    try:
+        if own:
+            from playwright.sync_api import sync_playwright
+            pcm = sync_playwright().start()
+            browser = _launch_browser(pcm)
+        pg = browser.new_page()
+        for _, kw in mc["keywords"]:
+            try:
+                q = _up.quote(kw)
+                url = f"https://www.bing.com/news/search?q={q}&qft=interval%3d%227%22&form=NWRFSH"
+                pg.goto(url, wait_until="domcontentloaded", timeout=25000)
+                pg.wait_for_timeout(2500)
+                cards = pg.query_selector_all("div.news-card")
+                if not cards:
+                    cards = pg.query_selector_all("article, .news-item, .algocore")
+                for c in cards:
+                    a = c.query_selector("a[href]")
+                    if not a:
+                        continue
+                    link = a.get_attribute("href") or ""
+                    title = (a.inner_text() or "").strip()
+                    if not link or not title or len(title) < 5:
+                        continue
+                    if link in seen_urls:
+                        continue
+                    seen_urls.add(link)
+                    if topic_neg_re.search(title):
+                        continue
+                    # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
+                    if not MILKTEA_DRINK.search(title):
+                        continue
+                    if not MILKTEA_SIGNAL.search(title):
+                        continue
+                    deals.append({
+                        "platform": "Bing新闻",
+                        "category": "奶茶IP联名",
+                        "city": "",
+                        "title": title,
+                        "detail": "",
+                        "url": link,
+                        "confidence": "🟢",
+                        "source": "milktea",
+                        "date": "",
+                        "date_raw": "",
+                        "_force_type": "🧋 奶茶联名",
+                    })
+            except Exception as e:
+                print("MILKTEA_RUN_ERR", kw, e)
                 continue
-            seen_urls.add(url)
-            title = (a.get("title") or "").strip()
-            if len(title) < 5:
-                continue
-            desc = a.get("desc") or ""
-            blob = title + "\n" + desc
-            if XHS_NEG.search(blob):
-                continue
-            if topic_neg_re.search(blob):
-                continue
-            # 纯度闸门：必须同时含「饮品」+「联名信号」，过滤普通探店/纯美食
-            if not MILKTEA_DRINK.search(blob):
-                continue
-            if not MILKTEA_SIGNAL.search(blob):
-                continue
-            date_val = ""
-            ct = a.get("createTime") or ""
-            if ct:
-                try:
-                    date_val = ct.split(" ")[0]
-                    _dt.date.fromisoformat(date_val)
-                except (ValueError, AttributeError):
-                    date_val = ""
-            deals.append({
-                "platform": "小红书",
-                "category": "奶茶IP联名",
-                "city": "",
-                "title": title,
-                "detail": desc[:120],
-                "url": url,
-                "confidence": "🟢",
-                "source": "milktea",
-                "date": date_val,
-                "date_raw": ct,
-                "_force_type": "🧋 奶茶联名",
-                "like_count": a.get("likedCount", 0) or 0,
-                "interactive_count": a.get("interactiveCount", 0) or 0,
-            })
-    print(f"MILKTEA_OK 抓取 {len(deals)} 条（{len(seen_urls)} 唯一链接）")
+    finally:
+        if own and browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+    print(f"MILKTEA_OK 抓取 {len(deals)} 条")
     return deals
 
 
@@ -1327,7 +1311,7 @@ def main():
         "milktea": fetch_milktea,
     }
     enabled = cfg.get("enabled_sources") or list(SOURCES.keys())
-    PW_SOURCES = ("icbc", "bendibao")  # Playwright 源：共用一个 chromium
+    PW_SOURCES = ("icbc", "bendibao", "milktea")  # Playwright 源：共用一个 chromium
     raw = []
 
     # 非 Playwright 源（纯 requests）并发抓取，缩短总耗时
