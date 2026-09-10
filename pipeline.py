@@ -594,6 +594,16 @@ MILKTEA_DEFAULTS = {
     ],
     "window_days": 14,
     "max_age_hours": 48,  # 只收近 48 小时的实时微博
+    # 品牌官微 uid（已逐个核对粉丝量 + 「微博认证」，2026-09-11 确认）
+    "brand_uids": [
+        ("喜茶", "2804387887"),      # 146.7万粉
+        ("奈雪的茶", "5884674413"),  # 147.1万粉
+        ("霸王茶姬", "5652018762"),  # 106.1万粉
+        ("瑞幸咖啡", "6349791448"),  # 117.2万粉
+        ("古茗茶饮", "2809775704"),  # 146万粉
+        ("蜜雪冰城", "1704709632"),  # 251.3万粉
+        ("茶百道", "6502206666"),    # 73.8万粉
+    ],
     "per_kw": 15,
     "topic_neg": [
         "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
@@ -643,6 +653,9 @@ def get_milktea_cfg():
                            for x in u["keywords"]]
     if u.get("topic_neg") and isinstance(u["topic_neg"], list):
         cfg["topic_neg"] = u["topic_neg"]
+    if u.get("brand_uids") and isinstance(u["brand_uids"], list):
+        cfg["brand_uids"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
+                             for x in u["brand_uids"]]
     return cfg
 
 
@@ -694,6 +707,41 @@ def _wb_rel_time(s, now):
     return None
 
 
+def _wb_cards(pg):
+    """从 m.weibo.cn 页面（实时搜索流 或 用户主页）提取微博条目，结构完全一致。
+    返回 [(时间串, 正文, 微博链接 or "")]。无 .weibo-text 的是超话/用户卡片，跳过。"""
+    out = []
+    for c in pg.query_selector_all("div.card-wrap"):
+        wt = c.query_selector(".weibo-text")
+        if not wt:
+            continue
+        txt = re.sub(r"\s+", " ", (wt.inner_text() or "")).strip()
+        te = c.query_selector("span.time")
+        a = c.query_selector('a[href*="/status/"]')
+        out.append(((te.inner_text() or "").strip() if te else "", txt,
+                    (a.get_attribute("href") or "") if a else ""))
+    return out
+
+
+def _pick_title(txt, brand_re=None):
+    """标题选句：优先「同时含品牌+联名信号」的句子 → 含联名信号的句子 → 首句，截断 50 字。
+    避免把整段营销文案塞进日报表格。"""
+    sents = [s.strip() for s in re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)
+             if len(s.strip()) >= 6]
+    if brand_re:
+        for _s in sents:
+            if brand_re.search(_s) and MILKTEA_SIGNAL.search(_s):
+                return _s[:50]
+    for _s in sents:
+        if MILKTEA_SIGNAL.search(_s):
+            return _s[:50]
+    if brand_re:
+        for _s in sents:
+            if brand_re.search(_s):
+                return _s[:50]
+    return (sents[0] if sents else txt)[:50]
+
+
 def fetch_milktea(browser=None):
     """奶茶 IP 联名信源：抓微博「实时」搜索流（m.weibo.cn，免登录）。
 
@@ -723,7 +771,54 @@ def fetch_milktea(browser=None):
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
-        blocked = False  # 微博一旦出现登录墙/验证页，本轮后续关键词直接跳过
+        blocked = False  # 微博一旦出现登录墙/验证页，本轮后续请求直接跳过
+        # ---- 第一路：品牌官微时间线（官宣第一手，质量最高 → 置信度 🟢）----
+        # uid 必须逐个核对粉丝量与「微博认证」：m.weibo.cn/n/<昵称> 会重定向到同名
+        # 山寨号（实测「瑞幸咖啡」「霸王茶姬」「茶百道」都撞到粉丝个位数的假号）。
+        for bname, uid in mc.get("brand_uids") or []:
+            if blocked:
+                break
+            try:
+                pg.goto(f"https://m.weibo.cn/u/{uid}",
+                        wait_until="domcontentloaded", timeout=25000)
+                pg.wait_for_timeout(3500)
+                if _page_blocked(pg):
+                    blocked = True
+                    print("MILKTEA_BLOCKED", bname)
+                    break
+                for tstr, txt, href in _wb_cards(pg):
+                    if not href or len(txt) < 10:
+                        continue
+                    link = "https://m.weibo.cn" + href if href.startswith("/") else href
+                    if link in seen_urls:
+                        continue
+                    dt = _wb_rel_time(tstr, now)
+                    if dt is None or dt < cutoff:
+                        continue
+                    # 官微也要有「联名/新品」语义：日常 UGC 转发、粉丝互动不该进日报
+                    if not MILKTEA_SIGNAL.search(txt):
+                        continue
+                    if topic_neg_re.search(txt):
+                        continue
+                    # 官微本身即品牌，无需品牌名闸门；官宣文案也不一定带信息性词，故不加
+                    seen_urls.add(link)
+                    deals.append({
+                        "platform": bname,
+                        "category": "奶茶IP联名",
+                        "city": "",
+                        "title": _pick_title(txt, None),
+                        "detail": "官微",
+                        "url": link,
+                        "confidence": "🟢",
+                        "source": "milktea",
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "date_raw": tstr,
+                        "_force_type": "🧋 奶茶联名",
+                    })
+            except Exception as e:
+                print("MILKTEA_RUN_ERR", bname, e)
+                continue
+        # ---- 第二路：实时搜索兜底（覆盖官微未发/未收录的小品牌），置信度 🟡 ----
         for _, kw in mc["keywords"]:
             if blocked:
                 break
