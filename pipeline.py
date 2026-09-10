@@ -583,14 +583,16 @@ def fetch_xiaohongshu():
 # 微博才是品牌官宣的第一现场；m.weibo.cn 移动端搜索免登录（PC 端 s.weibo.com 强制登录）。
 # 故改抓「实时」流（containerid type=61），并用 max_age_hours 只收新鲜内容，杜绝考古。
 MILKTEA_DEFAULTS = {
+    # 兜底搜索关键词：总数保持 7 个不变（请求数不变，避免加重微博限流）。
+    # 瑞幸/茶百道已由官微路覆盖，故换成羊毛向词，与主路互补。
     "keywords": [
         ("🧋 奶茶联名", "奶茶 联名"),
         ("🧋 奶茶联名", "喜茶 联名"),
         ("🧋 奶茶联名", "奈雪 联名"),
         ("🧋 奶茶联名", "霸王茶姬 联名"),
-        ("🧋 奶茶联名", "瑞幸 联名"),
         ("🧋 奶茶联名", "古茗 联名"),
-        ("🧋 奶茶联名", "茶百道 联名"),
+        ("🧋 奶茶联名", "奶茶 买一送一"),
+        ("🧋 奶茶联名", "奶茶 免费 领取"),
     ],
     "window_days": 14,
     "max_age_hours": 48,  # 只收近 48 小时的实时微博
@@ -613,15 +615,35 @@ MILKTEA_DEFAULTS = {
         "租房", "买房", "装修", "楼盘", "学区",
         "旅游", "攻略", "景点", "民宿", "出行",
     ],
+    # 羊毛价值词（硬闸门）：命中任一才收录。调词改这里或 config.json 的 milktea.deal_pos。
+    # 不含「新品/上新/限定/周边」——只说明有东西卖，不代表能薅。
+    "deal_pos": [
+        "联名", "联动", "IP", "合作款",
+        "免费", "免单", "买一送一", "买1送1", "第二杯", "第二件", "半价",
+        "0元", "1元", "9.9", "9块9",
+        "买赠", "附赠", "赠送", "赠品", "随杯", "加价购",
+        "抽奖", "抽送", "免邮", "包邮", "兑换", "领取", "福利", "羊毛",
+        "秒杀", "特价", "优惠", "立减", "满减",
+    ],
     # 饭圈/明星向噪音：常带「联名奶茶」字样但与品牌联名无关（例：明星送奶茶应援）
     "fandom_neg": [
         "超话", "控评", "打榜", "应援", "后援会", "青春大使", "代言人",
         "粉丝群", "爱豆", "追星", "接机", "生日应援", "出道", "应援色",
     ],
 }
-# 联名正向信号：必须有「联名/限定/周边/买赠」语义才保留
-MILKTEA_SIGNAL = re.compile(r"(联名|IP|限定|周边|典藏|隐藏款|第二杯|买一送一|盲盒|"
-                            r"收藏卡|新品|上新)")
+# 羊毛价值闸门（硬闸门，必须命中才收录）。
+# 设计原则：只保留「能薅」的内容 —— 联名/联动（蹲联名）+ 免费/买一送一/赠/抽奖（真羊毛）。
+# 已刻意移除「新品|上新|限定|周边|典藏|盲盒」：这些只说明「有东西卖了」，
+# 不代表能白嫖，「古茗 HPP 茉莉银针 限定上新」这类纯上新对用户无意义。
+# IP 加字母边界：(?<![A-Za-z])IP(?![A-Za-z]) 可排除 VIP / IPHONE 等误伤。
+# 词表可在 config.json 的 milktea.deal_pos 覆盖，调词不用改代码。
+MILKTEA_DEAL = re.compile(
+    r"(联名|联动|(?<![A-Za-z])IP(?![A-Za-z])|合作款|"
+    r"免费|免单|买一送一|买1送1|第二杯|第二件|半价|"
+    r"(?<!\d)(0元|1元|9\.9|9块9)|买赠|附赠|赠送|赠品|(?<!捐)赠|随杯|加价购|"
+    r"抽奖|抽送|揪.{0,6}(位|个|名)|免邮|包邮|兑换|领取|福利|羊毛|秒杀|特价|优惠|立减|满减|"
+    r"送.{0,4}(周边|好礼|礼包|全套|杯|券|贴纸|徽章|公仔|盲盒|玩偶|挂件|明信片|海报|定制|帆布|钥匙扣|杯套))"
+)
 # 品牌硬闸门：必须出现具体品牌名。微博上「我看见联名的奶茶店了」这类个人日常
 # 也含「奶茶+联名」，只有强制品牌名才能滤掉（宁缺毋滥，保证每条都可蹲）。
 MILKTEA_BRAND = re.compile(r"(喜茶|奈雪|霸王茶姬|茶百道|蜜雪冰城|蜜雪|沪上阿姨|瑞幸|"
@@ -653,6 +675,16 @@ def get_milktea_cfg():
                            for x in u["keywords"]]
     if u.get("topic_neg") and isinstance(u["topic_neg"], list):
         cfg["topic_neg"] = u["topic_neg"]
+    if u.get("deal_pos") and isinstance(u["deal_pos"], list):
+        cfg["deal_pos"] = u["deal_pos"]
+    # 编译后的价值闸门。config 里配的是纯词表（re.escape 拼接），
+    # 未配时用代码内置的正则版（含 IP 字母边界、「送XX」搭配等更严的写法）。
+    dp = cfg.get("deal_pos")
+    try:
+        cfg["_deal_re"] = (re.compile("(" + "|".join(re.escape(w) for w in dp) + ")")
+                           if dp else MILKTEA_DEAL)
+    except Exception:
+        cfg["_deal_re"] = MILKTEA_DEAL
     if u.get("brand_uids") and isinstance(u["brand_uids"], list):
         cfg["brand_uids"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
                              for x in u["brand_uids"]]
@@ -723,17 +755,18 @@ def _wb_cards(pg):
     return out
 
 
-def _pick_title(txt, brand_re=None):
-    """标题选句：优先「同时含品牌+联名信号」的句子 → 含联名信号的句子 → 首句，截断 50 字。
-    避免把整段营销文案塞进日报表格。"""
+def _pick_title(txt, brand_re=None, deal_re=None):
+    """标题选句：优先「同时含品牌+羊毛价值词」的句子 → 含价值词的句子 → 首句，截断 50 字。
+    避免把整段营销文案塞进日报表格，且让「免费/买一送一/联名」一眼可见。"""
+    deal_re = deal_re or MILKTEA_DEAL
     sents = [s.strip() for s in re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)
              if len(s.strip()) >= 6]
     if brand_re:
         for _s in sents:
-            if brand_re.search(_s) and MILKTEA_SIGNAL.search(_s):
+            if brand_re.search(_s) and deal_re.search(_s):
                 return _s[:50]
     for _s in sents:
-        if MILKTEA_SIGNAL.search(_s):
+        if deal_re.search(_s):
             return _s[:50]
     if brand_re:
         for _s in sents:
@@ -747,10 +780,11 @@ def fetch_milktea(browser=None):
 
     为什么是微博：品牌联名的官宣/开售第一现场在微博，而新闻搜索是事后索引，
     实测拿到的多是数月前的复盘/黄牛案/售罄报道，拿不到「即将联名」。
-    三重闸门保证每条都可蹲：①时效 ≤ max_age_hours（默认 48h，杜绝考古）
-    ②必须出现具体品牌名 ③必须含联名语义。另过滤饭圈/明星应援类噪音。
-    置信度标 🟡：微博为 UGC/官宣混合，权威性低于新闻稿，需自行核对。
-    可接收外部 browser（shared_browser）复用，避免重复启动 chromium。"""
+    闸门（两路共通）：①时效 ≤ max_age_hours（默认 48h，杜绝考古）
+    ②必须出现具体品牌名（仅搜索路）③必须命中羊毛价值词（联名/联动/免费/买一送一/
+    第二杯/半价/赠/抽奖…）—— 纯「新品上新」不收录，因为没有羊毛价值。
+    另过滤饭圈/明星应援类噪音。
+    置信度：官微 🟢 / 搜索 🟡。可接收外部 browser 复用，避免重复启动 chromium。"""
     import urllib.parse as _up
     deals = []
     seen_urls = set()
@@ -764,6 +798,13 @@ def fetch_milktea(browser=None):
     info_pos = mc.get("info_pos")
     info_re = (re.compile("(" + "|".join(re.escape(w) for w in info_pos) + ")")
                if info_pos else MILKTEA_INFO)
+    # 羊毛价值闸门：全文命中才算「能薅」。命中的词会写进 detail 列，便于日报里一眼判断。
+    deal_re = mc.get("_deal_re") or MILKTEA_DEAL
+
+    def _hit(t):
+        m = deal_re.search(t or "")
+        return m.group(0) if m else ""
+
     own = browser is None
     try:
         if own:
@@ -795,8 +836,10 @@ def fetch_milktea(browser=None):
                     dt = _wb_rel_time(tstr, now)
                     if dt is None or dt < cutoff:
                         continue
-                    # 官微也要有「联名/新品」语义：日常 UGC 转发、粉丝互动不该进日报
-                    if not MILKTEA_SIGNAL.search(txt):
+                    # 官微也必须过羊毛价值闸门：官微同样会发「新品上新」「品牌日常」，
+                    # 这些没有羊毛价值。命中词写进 detail 便于在日报里一眼看出薅点。
+                    hit = _hit(txt)
+                    if not hit:
                         continue
                     if topic_neg_re.search(txt):
                         continue
@@ -806,8 +849,8 @@ def fetch_milktea(browser=None):
                         "platform": bname,
                         "category": "奶茶IP联名",
                         "city": "",
-                        "title": _pick_title(txt, None),
-                        "detail": "官微",
+                        "title": _pick_title(txt, None, deal_re),
+                        "detail": "官微·" + hit,
                         "url": link,
                         "confidence": "🟢",
                         "source": "milktea",
@@ -860,7 +903,9 @@ def fetch_milktea(browser=None):
                         continue
                     if not MILKTEA_BRAND.search(txt):
                         continue
-                    if not MILKTEA_SIGNAL.search(txt):
+                    # 羊毛价值闸门（与官微路一致）：纯「新品上新」不收录
+                    hit = _hit(txt)
+                    if not hit:
                         continue
                     if info_re and not info_re.search(txt):
                         continue
@@ -875,7 +920,7 @@ def fetch_milktea(browser=None):
                              if len(s.strip()) >= 6]
                     title = ""
                     for _s in sents:
-                        if MILKTEA_BRAND.search(_s) and MILKTEA_SIGNAL.search(_s):
+                        if MILKTEA_BRAND.search(_s) and deal_re.search(_s):
                             title = _s
                             break
                     if not title:
@@ -891,7 +936,7 @@ def fetch_milktea(browser=None):
                         "category": "奶茶IP联名",
                         "city": "",
                         "title": title,
-                        "detail": who,
+                        "detail": (who + "·" + hit) if who else hit,
                         "url": link,
                         "confidence": "🟡",
                         "source": "milktea",
