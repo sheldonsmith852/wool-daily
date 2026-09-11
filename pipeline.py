@@ -672,6 +672,34 @@ MILKTEA_LOTTERY_NEG = re.compile(
     r"锦鲤|中奖|抽中")
 
 
+def _milktea_verdict(txt, deal_re, lottery_re):
+    """对单条候选帖做闸门裁决，返回 (是否收录, 分区, 命中词)。
+
+    判定顺序是本模块最容易踩坑的地方，故抽成纯函数便于离线回归：
+
+      ① **联名/联动帖直接收录** → 🧋 奶茶联名，不受抽奖闸门影响。
+         官微的联名公告几乎都带「关注+转发抽N位」的促互落款，若把抽奖闸门
+         放在最前面一刀切，会把整条联名误杀 —— 实测奈雪×明日方舟终末地(9/11)、
+         奈雪×豚豚崽(9/10) 两条联名就是这样被清空的（表现为"奈雪没有联动"）。
+         口径：联名信息本身即价值（上线时间/周边/渠道），抽奖只是促互手段。
+      ② 非联名 + 抽奖落款 → 丢（用户口径：抽奖根本抽不到我）。
+      ③ 非联名 + 命中确定性羊毛（买一送一/免费/半价/0元…）→ 🥤 奶茶饮品。
+      ④ 其余（纯上新/品牌日常/代言）→ 丢。
+    """
+    nt = _norm_text(txt or "")
+    link_m = MILKTEA_LINK.search(nt)
+    if link_m:
+        # 命中词优先显示联动信号（联名/联动/IP/合作款），而不是可能出现在更前面的
+        # 抽奖落款词（如「揪5位」）—— detail 列要能一眼看出这条为什么归联动区。
+        return True, "🧋 奶茶联名", link_m.group(0)
+    if lottery_re.search(nt):
+        return False, "", ""
+    m = deal_re.search(nt)
+    if not m:
+        return False, "", ""
+    return True, "🥤 奶茶饮品", m.group(0)
+
+
 def get_milktea_cfg():
     """奶茶官微信源配置：config.json 的 milktea 段覆盖默认值（改词调参不用碰代码）。"""
     cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in MILKTEA_DEFAULTS.items()}
@@ -686,18 +714,21 @@ def get_milktea_cfg():
         cfg["deal_pos"] = u["deal_pos"]
     if u.get("lottery_neg") and isinstance(u["lottery_neg"], list):
         cfg["lottery_neg"] = u["lottery_neg"]
-    # 编译后的价值闸门。config 里配的是纯词表（re.escape 拼接），
-    # 未配时用代码内置的正则版（含 IP 字母边界、「送XX」搭配等更严的写法）。
-    # 词表路额外补一条「买N送N」宽松式（容忍空格），与内置正则口径对齐。
-    dp = cfg.get("deal_pos")
+    # 编译后的价值闸门。**默认走代码内置正则**（含 IP 字母边界、(?<!捐)赠、
+    # 「送XX(周边|券|杯)」搭配限定等边界保护）；仅当 config.json 显式配了
+    # milktea.deal_pos 时才走纯词表路（re.escape 拼接）。
+    # 坑：此前写成 cfg.get("deal_pos")，而 MILKTEA_DEFAULTS 自带 deal_pos，导致词表路
+    # 恒生效、内置正则的边界保护全部失效 —— 实测奈雪「送奈雪100元心意卡」里的「0元」
+    # 被误命中（内置 (?<!\d)0元 本可挡住）。故这里只看 config 的覆盖值 u。
+    dp = u.get("deal_pos") or None
     try:
         cfg["_deal_re"] = (re.compile("(" + "|".join(re.escape(w) for w in dp)
                                       + r"|买\s*[1一]\s*送\s*[1一])")
                            if dp else MILKTEA_DEAL)
     except Exception:
         cfg["_deal_re"] = MILKTEA_DEAL
-    # 抽奖负向闸门：config 可覆盖词表，未配时用代码内置正则。
-    ln = cfg.get("lottery_neg")
+    # 抽奖负向闸门：config 可覆盖词表，未配时用代码内置正则（同上，只看 config 覆盖值）。
+    ln = u.get("lottery_neg") or None
     try:
         cfg["_lottery_re"] = (re.compile("(" + "|".join(re.escape(w) for w in ln) + ")")
                               if ln else MILKTEA_LOTTERY_NEG)
@@ -880,8 +911,10 @@ def fetch_milktea(browser=None):
     """奶茶官微信源：只抓 7 个品牌官微的时间线（m.weibo.cn/u/<uid>，免登录）。
 
     只认官号：不抓实时搜索（搜索流含大量普通用户晒单/MCN 号，非官方口径）。
-    闸门：①时效 ≤ max_age_hours（默认 168h）②必须命中羊毛价值词（联名/联动/免费/
-    买一送一/第二杯/半价/赠/抽奖…）—— 纯「新品上新」不收录，因为没有羊毛价值。
+    闸门：①时效 ≤ max_age_hours（默认 168h）②命中羊毛价值词（联名/联动/免费/买一送一/
+    第二杯/半价/赠…）—— 纯「新品上新」不收录，因为没有羊毛价值；③纯抽奖帖排除
+    （要中奖才拿得到，用户口径「抽不到我」），但**联名帖豁免抽奖闸门** —— 官微的联名
+    公告几乎都带「关注+转发抽N位」促互落款，一刀切会把整条联名误杀。
     分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
     置信度：官微 🟢。可接收外部 browser 复用，避免重复启动 chromium。"""
     deals = []
@@ -890,14 +923,10 @@ def fetch_milktea(browser=None):
     now = _dt.datetime.now()
     cutoff = now - _dt.timedelta(hours=mc["max_age_hours"])
     # 注：官微路不套 topic_neg（那套生活噪音词是给小红书用的，会误杀品牌官宣，见下方循环）。
-    # 羊毛价值闸门：全文命中才算「能薅」。命中的词会写进 detail 列，便于日报里一眼判断。
+    # 价值闸门 / 抽奖闸门 / 分区判定统一由 _milktea_verdict 裁决（顺序敏感，见其文档串）；
     # 匹配一律走 _norm_text（emoji 数字归一化），否则「买1️⃣送1️⃣」这类官微写法会被漏掉。
     deal_re = mc.get("_deal_re") or MILKTEA_DEAL
     lottery_re = mc.get("_lottery_re") or MILKTEA_LOTTERY_NEG
-
-    def _hit(t):
-        m = deal_re.search(_norm_text(t or ""))
-        return m.group(0) if m else ""
 
     own = browser is None
     try:
@@ -929,24 +958,16 @@ def fetch_milktea(browser=None):
                         continue
                     if dt is None or dt < cutoff:
                         continue
-                    # 抽奖/评论区送类：要中奖才拿得到，命中即丢（用户口径：根本抽不到我）。
-                    # 注意与正羊毛区分 —— 买一送一/免费领/免单券 是确定可得的，不在此列。
-                    if lottery_re.search(_norm_text(txt)):
-                        continue
-                    # 官微也必须过羊毛价值闸门：官微同样会发「新品上新」「品牌日常」，
-                    # 这些没有羊毛价值。命中词写进 detail 便于在日报里一眼看出薅点。
-                    hit = _hit(txt)
-                    if not hit:
+                    # 闸门裁决：联名主体优先收录（抽奖只是促互落款，不连坐）；
+                    # 抽奖只做兜底排除；纯上新/品牌日常丢弃。顺序详见 _milktea_verdict。
+                    ok, ftype, hit = _milktea_verdict(txt, deal_re, lottery_re)
+                    if not ok:
                         continue
                     # 这里不再套 topic_neg：那套负向词（头发/美甲/穿搭/宠物…）是给
                     # 小红书生活内容设计的，用在品牌官宣上会误杀 —— 实测霸王茶姬
                     # 「适合和迪士尼公主们见一面…搭配」被「搭配」命中，整条被丢掉。
                     # 官微本身即品牌，无需品牌名闸门；官宣文案也不一定带信息性词，故不加。
                     seen_urls.add(link)
-                    # 分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
-                    # 同时命中时归联动区（口径：联动专门放联动区）。
-                    ftype = ("🧋 奶茶联名" if MILKTEA_LINK.search(_norm_text(txt))
-                             else "🥤 奶茶饮品")
                     deals.append({
                         "platform": bname,
                         "category": "奶茶官微",

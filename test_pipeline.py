@@ -74,6 +74,38 @@ class TestMilkteaGates(unittest.TestCase):
                   "霸王茶姬联名迪士尼公主轻因系列，第二波周边今日上线"):
             self.assertFalse(self.lot.search(P._norm_text(c)), c)
 
+    def test_verdict_link_survives_lottery(self):
+        # 官微的联名公告几乎都带「关注+转发抽N位」促互落款，抽奖闸门不得连坐整条联名。
+        # 回归：奈雪×明日方舟终末地(9/11)、奈雪×豚豚崽(9/10) 两条联名曾因此被清空，
+        # 表现为「奈雪没有联动」的假象。
+        for c in ("奈雪×@明日方舟终末地 联名活动，9月23日正式上线！关注并转发，抽20位管理员喝联名茶饮",
+                  "与豚豚崽一起解锁松弛～关注＋转发，揪5位朋友送全套萌物周边！联名蔬果酸奶昔"):
+            ok, ftype, hit = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🧋 奶茶联名", c)
+            self.assertEqual(hit, "联名", c)  # 命中词须显示联动信号，不显示抽奖落款
+
+    def test_verdict_pure_lottery_dropped(self):
+        # 纯抽奖（要中奖才拿得到）仍须丢弃 —— 用户口径：根本抽不到我。
+        for c in ("评论区揪5位朋友送奈雪30元福利券",
+                  "评论区抽10位朋友喝「霸气小红杏酸奶冰」",
+                  "北京地区请喝30杯「奶麻薯新品」"):
+            ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertFalse(ok, c)
+
+    def test_verdict_new_product_dropped(self):
+        # 纯上新没有羊毛价值（用户明确：上新这种对我没有意义）。
+        for c in ("奈雪秋日特调「400次金桂米酿奶咖」，今日正式上线！400次现打咸芝酪…",
+                  "奈雪法式佛卡夏上新啦！「多谷物菌菇火腿佛卡夏」热烤出炉，料多满足"):
+            ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertFalse(ok, c)
+
+    def test_verdict_drink_section(self):
+        ok, ftype, hit = P._milktea_verdict(
+            "凭学生证认证【霸气学生卡】可得招牌饮品第2件半价券*1", self.deal, self.lot)
+        self.assertTrue(ok)
+        self.assertEqual(ftype, "🥤 奶茶饮品")
+
 
 class TestNormDate(unittest.TestCase):
     def test_cn(self):
