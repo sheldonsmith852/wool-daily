@@ -28,6 +28,7 @@ import datetime as _dt
 import time
 import subprocess
 import tempfile
+import traceback
 from contextlib import contextmanager
 from html import escape as _esc
 from html import unescape as _unesc
@@ -589,8 +590,15 @@ def fetch_xiaohongshu():
 # 与「只看官方内容」的要求相悖，已整体删除（官微主页 m.weibo.cn/u/<uid> 免登录可浏览）。
 # 代价：官微主号以联名/代言/公益为主，门店级「买一送一」多由区域号/门店号发，
 # 故官微口径下「🥤 奶茶饮品」天然偏少——这是刻意的取舍，不做搜索回补。
+# 注意：这里刻意 **不再** 放 window_days / topic_neg / deal_pos 三个键。
+# 它们原先在此定义，但从未被任何代码消费（真正的价值闸门是下面的 MILKTEA_DEAL 正则），
+# 属于典型的「僵尸配置」——注释写着「调词改这里」，改了却完全不生效。
+# 实测往 MILKTEA_DEFAULTS["deal_pos"] 加词后，收录结果毫无变化。
+# 留着的唯一后果是误导后来调词的人（以为改了、实际没改）。
+# 要调词请：①改 MILKTEA_DEAL / MILKTEA_LOTTERY_NEG 正则（推荐，保留边界保护）；
+#          ②或在 config.json 显式配 milktea.deal_pos / milktea.lottery_neg
+#            （走纯词表路，会丢失内置正则的边界保护，见 get_milktea_cfg）。
 MILKTEA_DEFAULTS = {
-    "window_days": 14,
     "max_age_hours": 168,  # 只收近 7 天官微微博（仅官微后 48h 过窄，整区易空）
     # 品牌官微 uid（已逐个核对粉丝量 + 「微博认证」，2026-09-11 确认）。
     # 列表顺序 = 抓取顺序：高优品牌（奈雪/喜茶/霸王茶姬）排前。
@@ -602,24 +610,6 @@ MILKTEA_DEFAULTS = {
         ("古茗茶饮", "2809775704"),  # 146万粉
         ("蜜雪冰城", "1704709632"),  # 251.3万粉
         ("茶百道", "6502206666"),    # 73.8万粉
-    ],
-    "topic_neg": [
-        "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
-        "美甲", "美睫", "纹眉", "纹绣", "医美", "护肤", "化妆", "种草",
-        "穿搭", "ootd", "显瘦", "搭配", "减肥", "瘦身", "健身", "瑜伽",
-        "宠物", "撸猫", "猫", "狗", "孕期",
-        "租房", "买房", "装修", "楼盘", "学区",
-        "旅游", "攻略", "景点", "民宿", "出行",
-    ],
-    # 羊毛价值词（硬闸门）：命中任一才收录。调词改这里或 config.json 的 milktea.deal_pos。
-    # 不含「新品/上新/限定/周边」——只说明有东西卖，不代表能薅。
-    "deal_pos": [
-        "联名", "联动", "IP", "合作款",
-        "免费", "免单", "买一送一", "买1送1", "第二杯", "第二件", "半价",
-        "0元", "1元", "9.9", "9块9",
-        "买赠", "附赠", "赠送", "赠品", "随杯", "加价购",
-        "抽奖", "抽送", "免邮", "包邮", "兑换", "领取", "福利", "羊毛",
-        "秒杀", "特价", "优惠", "立减", "满减",
     ],
 }
 # 羊毛价值闸门（硬闸门，必须命中才收录）。
@@ -704,14 +694,8 @@ def get_milktea_cfg():
     """奶茶官微信源配置：config.json 的 milktea 段覆盖默认值（改词调参不用碰代码）。"""
     cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in MILKTEA_DEFAULTS.items()}
     u = (load_config() or {}).get("milktea", {}) or {}
-    if isinstance(u.get("window_days"), int) and u["window_days"] > 0:
-        cfg["window_days"] = u["window_days"]
     if isinstance(u.get("max_age_hours"), int) and u["max_age_hours"] > 0:
         cfg["max_age_hours"] = u["max_age_hours"]
-    if u.get("topic_neg") and isinstance(u["topic_neg"], list):
-        cfg["topic_neg"] = u["topic_neg"]
-    if u.get("deal_pos") and isinstance(u["deal_pos"], list):
-        cfg["deal_pos"] = u["deal_pos"]
     if u.get("lottery_neg") and isinstance(u["lottery_neg"], list):
         cfg["lottery_neg"] = u["lottery_neg"]
     # 编译后的价值闸门。**默认走代码内置正则**（含 IP 字母边界、(?<!捐)赠、
@@ -950,13 +934,13 @@ def fetch_milktea(browser=None):
     lottery_re = mc.get("_lottery_re") or MILKTEA_LOTTERY_NEG
 
     own = browser is None
+    pcm = None  # 仅在 own 时创建；必须 stop，否则每跑一次泄漏一个 playwright driver 进程
     try:
         if own:
             from playwright.sync_api import sync_playwright
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
-        blocked_o = False  # 撞墙标志：仅跳过后续官方品牌，避免无效请求
         # ---- 品牌官微时间线（官宣第一手，唯一来源 → 置信度 🟢）----
         # uid 必须逐个核对粉丝量与「微博认证」：m.weibo.cn/n/<昵称> 会重定向到同名
         # 山寨号（实测「瑞幸咖啡」「霸王茶姬」「茶百道」都撞到粉丝个位数的假号）。
@@ -964,8 +948,6 @@ def fetch_milktea(browser=None):
         # 水合的，靠 DOM 取链接会丢掉四到八成条目（详见 _official_rows 文档串）。
         # 品牌顺序即优先级：奈雪/喜茶/霸王茶姬 在前（见 MILKTEA_DEFAULTS.brand_uids）。
         for bname, uid in mc.get("brand_uids") or []:
-            if blocked_o:
-                break
             # 品牌名正则：官微正文常用简称（写「奈雪」而非「奈雪的茶」），故同时匹配
             # 全名与前两字简称，供 _pick_title 优先选「含品牌名的正文句」当标题。
             brand_re = re.compile(re.escape(bname) + "|" + re.escape(bname[:2]))
@@ -974,7 +956,8 @@ def fetch_milktea(browser=None):
                         wait_until="domcontentloaded", timeout=25000)
                 pg.wait_for_timeout(2500)
                 if _page_blocked(pg):
-                    blocked_o = True
+                    # 撞墙即 break：同一出口 IP 已被拦，后面几个品牌大概率同样被挡，
+                    # 继续请求只会白白拉长跑批时间（不再用标志位，break 本身即达成）。
                     print("MILKTEA_BLOCKED_OFFICIAL", bname)
                     break
                 for dt, txt, link in _official_rows(pg, uid, now):
@@ -1012,6 +995,11 @@ def fetch_milktea(browser=None):
         if own and browser is not None:
             try:
                 browser.close()
+            except Exception:
+                pass
+        if pcm is not None:
+            try:
+                pcm.stop()
             except Exception:
                 pass
     print(f"MILKTEA_OK 抓取 {len(deals)} 条")
@@ -1539,16 +1527,26 @@ def load_webhook():
     return load_config().get("webhook", "").strip()
 
 
-def chunk_md(md, limit=3800):
-    """按 '## ' 分组切分，保证每条消息不超企业微信 4096 字节（留余量）。"""
-    if len(md) <= limit:
+def chunk_md(md, limit=3800, unit="byte"):
+    """按 '## ' 分组切分，保证每条消息不超平台上限。
+
+    unit 说明（关键，曾踩坑）：
+      · unit="byte" → 企业微信群机器人，限额是 **4096 字节**。中文一个字 3 字节，
+        按字符切最坏能到 11400 字节，企微直接拒收整条。故默认按字节切。
+      · unit="char" → PushPlus，限额按字符计（默认 8000 字符），用字节切会平白
+        多切两三倍段数、把一条日报拆成好几条推送。
+    """
+    def _size(s):
+        return len(s.encode("utf-8")) if unit == "byte" else len(s)
+
+    if _size(md) <= limit:
         return [md]
     parts = md.split("\n## ")
     header = parts[0]
     chunks, cur = [], header
     for p in parts[1:]:
         block = "\n## " + p
-        if len(cur) + len(block) > limit:
+        if _size(cur + block) > limit:
             chunks.append(cur)
             cur = header + block
         else:
@@ -1607,7 +1605,7 @@ def send_pushplus(md, title):
     if not token:
         print("PUSHPLUS_NOT_CONFIGURED skip")
         return False
-    chunks = chunk_md(md, limit=8000)
+    chunks = chunk_md(md, limit=8000, unit="char")  # PushPlus 按字符限额
     ok_all = True
     for i, chunk in enumerate(chunks, 1):
         payload = {
@@ -1752,4 +1750,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 顶层兜底：cron 场景下 stderr 没人看，崩溃若不落盘告警就是「日报静默消失」。
+    # 尤其 Playwright 源（icbc/bendibao 各自包了 try，milktea 没有）一旦 chromium
+    # 崩掉（2C4G 机器跑 Xvfb 有 OOM 可能）会一路抛到这里：
+    # 不仅当天日报丢失，state 也不会落盘 → 次日所有条目被误标 🆕。
+    try:
+        main()
+    except Exception as e:
+        notify_failure(
+            f"日报管线崩溃：{type(e).__name__}: {e}\n"
+            + traceback.format_exc()[-800:])
+        raise
