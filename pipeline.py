@@ -183,6 +183,10 @@ def classify(d):
     for label, kws in TYPE_RULES:
         for kw in kws:
             if kw.lower() in text:
+                # 羊毛村的奶茶类线报改归「🛒 电商券」：奶茶两区只留微博官号内容。
+                # 这些线报（如「移动秒杀喜茶买一送一券」）本身仍可薅，只是不再进奶茶饮品区。
+                if label == "🥤 奶茶饮品" and d.get("source") in ("ym2.cc", "ymnnc.com"):
+                    return "🛒 电商券"
                 return label
     # 电商聚合源（SMZDM/联盟）未命中具体类型时，统一归「电商券」
     if d.get("source") in ("smzdm", "pdd"):
@@ -428,12 +432,11 @@ XHS_SCRIPT = os.path.join(os.path.expanduser("~"),
 # 明显无关内容直接剔除（明星应援/代购/招聘/租房/二手/婚恋等）——硬规则，保留代码
 XHS_NEG = re.compile(r"(演唱会|应援|代购|招聘|求职|出租|转租|二手|闲鱼|"
                       r"婚恋|相亲|征婚|拼单|粉丝|接机|见面会|求租)")
-# 内容路由：先判饮品 → 再判活动 → 否则丢弃（分类逻辑核心，保留代码，杜绝错分）
-XHS_TYPE_DRINK = re.compile(r"(冰饮|奶茶|柠檬茶|果茶|咖啡|饮品|买一送一|第二杯|半价|"
-                             r"特调|绵绵冰|冰淇淋|雪糕|杨枝甘露|葡萄柚|柠檬水)")
+# 内容路由：小红书只产出「深圳活动」类 —— 奶茶两区只由微博官号供内容，
+# 故不再把饮品笔记路由进「🥤 奶茶饮品」（避免非官号内容混入官方奶茶口径）。
 XHS_TYPE_EVENT = re.compile(r"(活动|市集|展览|快闪|派对|嘉年华|免费领|领免费|体验|"
-                             r"报名|演出|比赛|摊位|亲子|手工|集市|音乐节|探店|"
-                             r"开放|招募|福利|赠|送|打卡)")
+                            r"报名|演出|比赛|摊位|亲子|手工|集市|音乐节|探店|"
+                            r"开放|招募|福利|赠|送|打卡)")
 
 # 以下「词表 / 阈值」全部外置到 config.json 的 xiaohongshu 段（改词调参不用碰代码）：
 #   keywords       搜索关键词（仅偏置红狐召回方向，最终分类由标题内容路由决定）
@@ -442,9 +445,8 @@ XHS_TYPE_EVENT = re.compile(r"(活动|市集|展览|快闪|派对|嘉年华|免�
 #   topic_neg     主题负向词（美发/穿搭/宠物/旅游等生活噪音）
 #   sz_landmarks  深圳地域正向必校验词（城市 + 下辖区域/地标）
 XHS_DEFAULTS = {
+    # 只保留「深圳活动」类关键词：饮品类已移交微博官号（奶茶两区纯官号）。
     "keywords": [
-        ("🥤 奶茶饮品", "深圳 冰饮 买一送一"),
-        ("🥤 奶茶饮品", "深圳 奶茶 免费"),
         ("🎟️ 深圳活动", "深圳 免费活动"),
         ("🎟️ 深圳活动", "深圳 市集"),
         ("🎟️ 深圳活动", "深圳 快闪店"),
@@ -541,14 +543,12 @@ def fetch_xiaohongshu():
                 continue  # 美发/美妆/穿搭/宠物/房产/旅游等无关主题，剔除
             if not sz_re.search(blob):
                 continue  # 未明确提及深圳或下辖区域/地标，视为外地，剔除
-            # 按内容路由分类（不再依赖搜索关键词，避免语义召回错分）。
-            # 路由同时看标题+描述(blob)，救回「描述有活动/饮品信号但标题没写」的笔记。
-            if XHS_TYPE_DRINK.search(blob):
-                ftype = "🥤 奶茶饮品"
-            elif XHS_TYPE_EVENT.search(blob):
+            # 只产出「深圳活动」类：奶茶类内容已移交微博官号（奶茶两区纯官号）。
+            # 路由同时看标题+描述(blob)，救回「描述有活动信号但标题没写」的笔记。
+            if XHS_TYPE_EVENT.search(blob):
                 ftype = "🎟️ 深圳活动"
             else:
-                continue  # 标题与描述均无明确饮品/活动信号，丢弃避免错分
+                continue  # 无明确活动信号，丢弃避免错分
             # 日期：createTime 形如 "2026-08-12 18:30:55"，取日期部分
             date_val = ""
             ct = a.get("createTime") or ""
@@ -577,36 +577,25 @@ def fetch_xiaohongshu():
     return deals
 
 
-# ---- 奶茶 IP 联名信源（微博实时搜索·免登录，全国范围，不强制深圳）----
-# 为什么不再用新闻搜索：百度/360/Bing 资讯都是「事后索引」，实测返回的多是数月前的
-# 回顾/复盘/黄牛案/售罄报道（最新一条普遍滞后 1~2 周），结构上拿不到「即将联名」。
-# 微博才是品牌官宣的第一现场；m.weibo.cn 移动端搜索免登录（PC 端 s.weibo.com 强制登录）。
-# 故改抓「实时」流（containerid type=61），并用 max_age_hours 只收新鲜内容，杜绝考古。
+# ---- 奶茶官微信源（只抓品牌官微时间线，🟢 官方口径，全国范围，不强制深圳）----
+# 只认官号：早期用过微博「实时搜索」兜底，但搜索流里大量是普通用户晒单/MCN 号，
+# 与「只看官方内容」的要求相悖，已整体删除（官微主页 m.weibo.cn/u/<uid> 免登录可浏览）。
+# 代价：官微主号以联名/代言/公益为主，门店级「买一送一」多由区域号/门店号发，
+# 故官微口径下「🥤 奶茶饮品」天然偏少——这是刻意的取舍，不做搜索回补。
 MILKTEA_DEFAULTS = {
-    # 兜底搜索关键词：总数保持 7 个不变（请求数不变，避免加重微博限流）。
-    # 瑞幸/茶百道已由官微路覆盖，故换成羊毛向词，与主路互补。
-    "keywords": [
-        ("🧋 奶茶联名", "奶茶 联名"),
-        ("🧋 奶茶联名", "喜茶 联名"),
-        ("🧋 奶茶联名", "奈雪 联名"),
-        ("🧋 奶茶联名", "霸王茶姬 联名"),
-        ("🧋 奶茶联名", "古茗 联名"),
-        ("🧋 奶茶联名", "奶茶 买一送一"),
-        ("🧋 奶茶联名", "奶茶 免费 领取"),
-    ],
     "window_days": 14,
-    "max_age_hours": 48,  # 只收近 48 小时的实时微博
-    # 品牌官微 uid（已逐个核对粉丝量 + 「微博认证」，2026-09-11 确认）
+    "max_age_hours": 168,  # 只收近 7 天官微微博（仅官微后 48h 过窄，整区易空）
+    # 品牌官微 uid（已逐个核对粉丝量 + 「微博认证」，2026-09-11 确认）。
+    # 列表顺序 = 抓取顺序：高优品牌（奈雪/喜茶/霸王茶姬）排前。
     "brand_uids": [
-        ("喜茶", "2804387887"),      # 146.7万粉
-        ("奈雪的茶", "5884674413"),  # 147.1万粉
-        ("霸王茶姬", "5652018762"),  # 106.1万粉
+        ("奈雪的茶", "5884674413"),  # 147.1万粉 · 高优
+        ("喜茶", "2804387887"),      # 146.7万粉 · 高优
+        ("霸王茶姬", "5652018762"),  # 106.1万粉 · 高优
         ("瑞幸咖啡", "6349791448"),  # 117.2万粉
         ("古茗茶饮", "2809775704"),  # 146万粉
         ("蜜雪冰城", "1704709632"),  # 251.3万粉
         ("茶百道", "6502206666"),    # 73.8万粉
     ],
-    "per_kw": 15,
     "topic_neg": [
         "头发", "美发", "烫发", "染发", "剪发", "发型", "植发", "假发", "脱发", "护发",
         "美甲", "美睫", "纹眉", "纹绣", "医美", "护肤", "化妆", "种草",
@@ -625,11 +614,6 @@ MILKTEA_DEFAULTS = {
         "抽奖", "抽送", "免邮", "包邮", "兑换", "领取", "福利", "羊毛",
         "秒杀", "特价", "优惠", "立减", "满减",
     ],
-    # 饭圈/明星向噪音：常带「联名奶茶」字样但与品牌联名无关（例：明星送奶茶应援）
-    "fandom_neg": [
-        "超话", "控评", "打榜", "应援", "后援会", "青春大使", "代言人",
-        "粉丝群", "爱豆", "追星", "接机", "生日应援", "出道", "应援色",
-    ],
 }
 # 羊毛价值闸门（硬闸门，必须命中才收录）。
 # 设计原则：只保留「能薅」的内容 —— 联名/联动（蹲联名）+ 免费/买一送一/赠/抽奖（真羊毛）。
@@ -644,44 +628,23 @@ MILKTEA_DEAL = re.compile(
     r"抽奖|抽送|揪.{0,6}(位|个|名)|免邮|包邮|兑换|领取|福利|羊毛|秒杀|特价|优惠|立减|满减|"
     r"送.{0,4}(周边|好礼|礼包|全套|杯|券|贴纸|徽章|公仔|盲盒|玩偶|挂件|明信片|海报|定制|帆布|钥匙扣|杯套))"
 )
-# 品牌硬闸门：必须出现具体品牌名。微博上「我看见联名的奶茶店了」这类个人日常
-# 也含「奶茶+联名」，只有强制品牌名才能滤掉（宁缺毋滥，保证每条都可蹲）。
-MILKTEA_BRAND = re.compile(r"(喜茶|奈雪|霸王茶姬|茶百道|蜜雪冰城|蜜雪|沪上阿姨|瑞幸|"
-                           r"库迪|星巴克|古茗|CoCo|都可|乐乐茶|甜啦啦|益禾堂|书亦|"
-                           r"7分甜|茶颜悦色|幸运咖|一点点|COCO|coco)", re.I)
-# 信息性硬闸门：必须是「有人在宣布一件事」的语境（官宣/开售/活动/周边）。
-# 用来滤掉「今天买了杯XX联名杯，被拒了」这类个人日常——它们同样含品牌+联名，
-# 但对蹲联名毫无 actionable 价值。词表放 config.json 的 milktea.info_pos 可调。
-MILKTEA_INFO = re.compile(r"(官宣|上线|开售|开抢|上市|发售|预售|预约|限量|限时|"
-                          r"今日|明天|明日|即将|下周|本周|推出|携手|合作|活动|"
-                          r"套餐|周边|兑换|领取|抢购|秒杀|首发|新品|登陆|全国|"
-                          r"门店|回归|来袭|定档|联名款|联名系列|正式|同步)")
-# 硬羊毛词：命中即视为「确定能薅」，不再要求信息性闸门（购物晒单/个人感叹本身即价值）。
-# 与 MILKTEA_DEAL 的区别：MILKTEA_DEAL 含联名/联动等「软信号」，需配信息性闸门防噪音；
-# 这里的词是「买一送一/免费/半价」这类确定动作，出现即可信，跳过信息性闸门更不易漏。
-MILKTEA_HARD_DEAL = re.compile(
-    r"买一送一|买1送1|免费|免单|第二杯|第二件|半价|"
-    r"(?<!\d)(0元|1元|9\.9|9块9)|买赠|附赠|赠送|赠品|(?<!捐)赠|随杯|"
-    r"抽奖|抽送|免邮|包邮|兑换|领取|福利|羊毛|秒杀|特价|优惠|立减|满减|"
-    r"送.{0,4}(周边|好礼|礼包|全套|杯|券|贴纸|徽章|公仔|盲盒|玩偶|挂件|明信片|海报|定制|帆布|钥匙扣|杯套)"
-)
+# 分区闸门：命中「联名/联动/IP/合作款」→ 归「🧋 奶茶联名」区；
+# 未命中（只命中买一送一/免费/抽奖等硬羊毛动作）→ 归「🥤 奶茶饮品」区。
+# 两者同时命中时归联动区（口径：联动专门放联动区）。
+MILKTEA_LINK = re.compile(r"(联名|联动|(?<![A-Za-z])IP(?![A-Za-z])|合作款)")
+# 高优品牌：日报排序时这三家排在其他品牌之前，其后按发布时间倒序。
+# 名称必须与 brand_uids 里的品牌名一致（即条目的 platform 字段）。
+MILKTEA_TOP_BRANDS = ("奈雪的茶", "喜茶", "霸王茶姬")
 
 
 def get_milktea_cfg():
-    """奶茶联名信源配置：config.json 的 milktea 段覆盖默认值（改词调参不用碰代码）。"""
+    """奶茶官微信源配置：config.json 的 milktea 段覆盖默认值（改词调参不用碰代码）。"""
     cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in MILKTEA_DEFAULTS.items()}
     u = (load_config() or {}).get("milktea", {}) or {}
     if isinstance(u.get("window_days"), int) and u["window_days"] > 0:
         cfg["window_days"] = u["window_days"]
-    if isinstance(u.get("per_kw"), int) and u["per_kw"] > 0:
-        cfg["per_kw"] = u["per_kw"]
     if isinstance(u.get("max_age_hours"), int) and u["max_age_hours"] > 0:
         cfg["max_age_hours"] = u["max_age_hours"]
-    if u.get("fandom_neg") and isinstance(u["fandom_neg"], list):
-        cfg["fandom_neg"] = u["fandom_neg"]
-    if u.get("keywords"):
-        cfg["keywords"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
-                           for x in u["keywords"]]
     if u.get("topic_neg") and isinstance(u["topic_neg"], list):
         cfg["topic_neg"] = u["topic_neg"]
     if u.get("deal_pos") and isinstance(u["deal_pos"], list):
@@ -700,8 +663,7 @@ def get_milktea_cfg():
     return cfg
 
 
-# 微博「实时」搜索流（type=61）。m.weibo.cn 移动端免登录；PC 端 s.weibo.com 会强制登录。
-MILKTEA_WB_URL = "https://m.weibo.cn/search?containerid={cid}"
+# 注：MILKTEA_WB_URL（微博实时搜索流）随「搜索兜底路」一并删除，官微只走 u/<uid> 时间线。
 
 
 def _page_blocked(pg):
@@ -785,28 +747,19 @@ def _pick_title(txt, brand_re=None, deal_re=None):
 
 
 def fetch_milktea(browser=None):
-    """奶茶 IP 联名信源：抓微博「实时」搜索流（m.weibo.cn，免登录）。
+    """奶茶官微信源：只抓 7 个品牌官微的时间线（m.weibo.cn/u/<uid>，免登录）。
 
-    为什么是微博：品牌联名的官宣/开售第一现场在微博，而新闻搜索是事后索引，
-    实测拿到的多是数月前的复盘/黄牛案/售罄报道，拿不到「即将联名」。
-    闸门（两路共通）：①时效 ≤ max_age_hours（默认 48h，杜绝考古）
-    ②必须出现具体品牌名（仅搜索路）③必须命中羊毛价值词（联名/联动/免费/买一送一/
-    第二杯/半价/赠/抽奖…）—— 纯「新品上新」不收录，因为没有羊毛价值。
-    另过滤饭圈/明星应援类噪音。
-    置信度：官微 🟢 / 搜索 🟡。可接收外部 browser 复用，避免重复启动 chromium。"""
-    import urllib.parse as _up
+    只认官号：不抓实时搜索（搜索流含大量普通用户晒单/MCN 号，非官方口径）。
+    闸门：①时效 ≤ max_age_hours（默认 168h）②必须命中羊毛价值词（联名/联动/免费/
+    买一送一/第二杯/半价/赠/抽奖…）—— 纯「新品上新」不收录，因为没有羊毛价值。
+    分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
+    置信度：官微 🟢。可接收外部 browser 复用，避免重复启动 chromium。"""
     deals = []
     seen_urls = set()
     mc = get_milktea_cfg()
     now = _dt.datetime.now()
     cutoff = now - _dt.timedelta(hours=mc["max_age_hours"])
     topic_neg_re = re.compile("(" + "|".join(re.escape(w) for w in mc["topic_neg"]) + ")")
-    fandom_neg = mc.get("fandom_neg") or []
-    fandom_re = (re.compile("(" + "|".join(re.escape(w) for w in fandom_neg) + ")")
-                 if fandom_neg else None)
-    info_pos = mc.get("info_pos")
-    info_re = (re.compile("(" + "|".join(re.escape(w) for w in info_pos) + ")")
-               if info_pos else MILKTEA_INFO)
     # 羊毛价值闸门：全文命中才算「能薅」。命中的词会写进 detail 列，便于日报里一眼判断。
     deal_re = mc.get("_deal_re") or MILKTEA_DEAL
 
@@ -821,13 +774,13 @@ def fetch_milktea(browser=None):
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
-        blocked_o = False  # 官方路独立撞墙标志：仅跳过后续官方品牌，绝不牵连搜索兜底
-        # ---- 第一路：品牌官微时间线（官宣第一手，质量最高 → 置信度 🟢）----
+        blocked_o = False  # 撞墙标志：仅跳过后续官方品牌，避免无效请求
+        # ---- 品牌官微时间线（官宣第一手，唯一来源 → 置信度 🟢）----
         # uid 必须逐个核对粉丝量与「微博认证」：m.weibo.cn/n/<昵称> 会重定向到同名
         # 山寨号（实测「瑞幸咖啡」「霸王茶姬」「茶百道」都撞到粉丝个位数的假号）。
         # 注：m.weibo.cn 用户主页是 SPA，滚动会触发整页 DOM 重渲染、卡片节点整体失效，
-        # 故不滚动，只取首屏已渲染卡片（官宣/联名多在最新或置顶，足够）；
-        # 「买一送一」类门店促销主账号极少发，主要由第二路实时搜索兜底。
+        # 故不滚动，只取首屏已渲染卡片（官宣/联名多在最新或置顶，足够）。
+        # 品牌顺序即优先级：奈雪/喜茶/霸王茶姬 在前（见 MILKTEA_DEFAULTS.brand_uids）。
         for bname, uid in mc.get("brand_uids") or []:
             if blocked_o:
                 break
@@ -855,11 +808,15 @@ def fetch_milktea(browser=None):
                         continue
                     if topic_neg_re.search(txt):
                         continue
-                    # 官微本身即品牌，无需品牌名闸门；官宣文案也不一定带信息性词，故不加
+                    # 官微本身即品牌，无需品牌名闸门；官宣文案也不一定带信息性词，故不加。
                     seen_urls.add(link)
+                    # 分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
+                    # 同时命中时归联动区（口径：联动专门放联动区）。
+                    ftype = ("🧋 奶茶联名" if MILKTEA_LINK.search(txt)
+                             else "🥤 奶茶饮品")
                     deals.append({
                         "platform": bname,
-                        "category": "奶茶IP联名",
+                        "category": "奶茶官微",
                         "city": "",
                         "title": _pick_title(txt, None, deal_re),
                         "detail": "官微·" + hit,
@@ -868,100 +825,10 @@ def fetch_milktea(browser=None):
                         "source": "milktea",
                         "date": dt.strftime("%Y-%m-%d"),
                         "date_raw": tstr,
-                        "_force_type": "🧋 奶茶联名",
+                        "_force_type": ftype,
                     })
             except Exception as e:
                 print("MILKTEA_RUN_ERR", bname, e)
-                continue
-        # ---- 第二路：实时搜索兜底（覆盖官微未发/未收录的小品牌），置信度 🟡 ----
-        # 独立于官方路：官方路撞墙绝不跳过本路，否则「买一送一」等只能从搜索来的真羊毛会被连坐漏抓。
-        blocked_s = False
-        for _, kw in mc["keywords"]:
-            if blocked_s:
-                break
-            # type=61 = 实时流（按时间倒序）。综合流(type=1)按热度排，会返回多年前内容。
-            cid = _up.quote("100103type=61&q=" + kw)
-            try:
-                pg.goto(MILKTEA_WB_URL.format(cid=cid),
-                        wait_until="domcontentloaded", timeout=25000)
-                pg.wait_for_timeout(3000)
-                if _page_blocked(pg):
-                    blocked_s = True
-                    print("MILKTEA_BLOCKED_SEARCH", kw)
-                    break
-                for c in pg.query_selector_all("div.card-wrap"):
-                    wt = c.query_selector(".weibo-text")
-                    if not wt:
-                        continue  # 无正文的是超话/用户卡片，直接跳过
-                    txt = re.sub(r"\s+", " ", (wt.inner_text() or "")).strip()
-                    if len(txt) < 10:
-                        continue
-                    te = c.query_selector("span.time")
-                    tstr = (te.inner_text() or "").strip() if te else ""
-                    dt = _wb_rel_time(tstr, now)
-                    # 时效闸门：无时间或超时一律丢弃，这是「不出现考古新闻」的关键
-                    if dt is None or dt < cutoff:
-                        continue
-                    a = c.query_selector('a[href*="/status/"]')
-                    link = (a.get_attribute("href") or "") if a else ""
-                    if not link:
-                        continue
-                    if link.startswith("/"):
-                        link = "https://m.weibo.cn" + link
-                    if link in seen_urls:
-                        continue
-                    seen_urls.add(link)
-                    if topic_neg_re.search(txt):
-                        continue
-                    if fandom_re and fandom_re.search(txt):
-                        continue
-                    if not MILKTEA_BRAND.search(txt):
-                        continue
-                    # 羊毛价值闸门（与官微路一致）：纯「新品上新」不收录
-                    hit = _hit(txt)
-                    if not hit:
-                        continue
-                    # 软信号（联名/联动/IP/合作款）需配信息性闸门防个人日常噪音；
-                    # 硬羊毛词（买一送一/免费/半价…）本身即确定动作，跳过信息性闸门。
-                    if info_re and not MILKTEA_HARD_DEAL.search(txt) and not info_re.search(txt):
-                        continue
-                    who = ""
-                    h3 = c.query_selector("h3.m-text-cut")
-                    if h3:
-                        who = re.sub(r"\s+", " ", (h3.inner_text() or "")).strip()
-                    # 标题选「同时含品牌+联名信号」的第一个句子（信息密度最高）；
-                    # 退回含品牌的句子，再退回首句。避免整段营销文案塞进表格。
-                    sents = [s.strip() for s in
-                             re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)
-                             if len(s.strip()) >= 6]
-                    title = ""
-                    for _s in sents:
-                        if MILKTEA_BRAND.search(_s) and deal_re.search(_s):
-                            title = _s
-                            break
-                    if not title:
-                        for _s in sents:
-                            if MILKTEA_BRAND.search(_s):
-                                title = _s
-                                break
-                    if not title:
-                        title = sents[0] if sents else txt
-                    title = title[:50]
-                    deals.append({
-                        "platform": "微博",
-                        "category": "奶茶IP联名",
-                        "city": "",
-                        "title": title,
-                        "detail": (who + "·" + hit) if who else hit,
-                        "url": link,
-                        "confidence": "🟡",
-                        "source": "milktea",
-                        "date": dt.strftime("%Y-%m-%d"),
-                        "date_raw": tstr,
-                        "_force_type": "🧋 奶茶联名",
-                    })
-            except Exception as e:
-                print("MILKTEA_RUN_ERR", kw, e)
                 continue
     finally:
         if own and browser is not None:
@@ -1243,13 +1110,12 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
     for d in kept:
         by_source[d["source"]].append(d)
 
-    # 羊毛村（platform=羊毛村）配额：优先保奶茶，再按日期补其他类
+    # 羊毛村（platform=羊毛村）配额：按日期取最近 N 条
+    # （羊毛村已不再产出「🥤 奶茶饮品」，其奶茶类线报改归「🛒 电商券」，详见 classify）
     YM_CAP = sc["yangmaocun_cap"]
     ym_items = next((v for v in by_source.values()
                      if v and v[0].get("platform") == "羊毛村"), [])
-    ym_sorted = sorted(ym_items,
-                       key=lambda d: (1 if d.get("type") == "🥤 奶茶饮品" else 0,
-                                     d.get("date") or "0000-00-00"),
+    ym_sorted = sorted(ym_items, key=lambda d: d.get("date") or "0000-00-00",
                        reverse=True)
     ym_keep = {id(x) for x in ym_sorted[:YM_CAP]}
     capped = [d for d in kept
@@ -1276,6 +1142,10 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             continue
         s = sorted(items, key=lambda d: d.get("date") or "0000-00-00",
                    reverse=True)
+        if items[0].get("source") == "milktea":
+            # 奶茶官微：先按日期倒序，再稳定排序把高优品牌（奈雪/喜茶/霸王茶姬）
+            # 提到最前——保底 2 条也优先给高优品牌，不被冷门品牌抢占版面。
+            s.sort(key=lambda d: 0 if d.get("platform") in MILKTEA_TOP_BRANDS else 1)
         for d in s[:2]:
             guaranteed.append(d)
 
@@ -1285,6 +1155,13 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
     by_type = defaultdict(list)
     for d in capped:
         by_type[d["type"]].append(d)
+
+    # 奶茶两区排序：奈雪/喜茶/霸王茶姬 优先于其他品牌，其后按发布时间倒序。
+    # capped 已是日期倒序，stable sort 只调整品牌优先级，组内时间顺序保持不变。
+    for _t in ("🥤 奶茶饮品", "🧋 奶茶联名"):
+        if _t in by_type:
+            by_type[_t].sort(
+                key=lambda d: 0 if d.get("platform") in MILKTEA_TOP_BRANDS else 1)
 
     out = []
     seen_ids = set()
