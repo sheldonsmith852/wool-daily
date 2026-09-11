@@ -5,7 +5,7 @@
   "max_age_days": 7,
   "enabled_sources": ["55card", "yangmaocun", "smzdm", "union", "icbc", "bendibao", "xiaohongshu", "milktea"],
   "select": {
-    "per_type": 5,
+    "per_type": 8,
     "max": 40,
     "smzdm_per_type": 5,
     "smzdm_cap": 10,
@@ -48,13 +48,13 @@
   },
   "milktea": {
     "keywords": [
+      ["🧋 奶茶联名", "奶茶 买一送一"],
+      ["🧋 奶茶联名", "奶茶 免费 领取"],
+      ["🧋 奶茶联名", "霸王茶姬 买一送一"],
+      ["🧋 奶茶联名", "奶茶 第二杯"],
       ["🧋 奶茶联名", "奶茶 联名"],
       ["🧋 奶茶联名", "喜茶 联名"],
-      ["🧋 奶茶联名", "奈雪 联名"],
-      ["🧋 奶茶联名", "霸王茶姬 联名"],
-      ["🧋 奶茶联名", "古茗 联名"],
-      ["🧋 奶茶联名", "奶茶 买一送一"],
-      ["🧋 奶茶联名", "奶茶 免费 领取"]
+      ["🧋 奶茶联名", "奈雪 联名"]
     ],
     "window_days": 14,
     "max_age_hours": 48,
