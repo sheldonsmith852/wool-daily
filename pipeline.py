@@ -656,6 +656,15 @@ MILKTEA_INFO = re.compile(r"(官宣|上线|开售|开抢|上市|发售|预售|�
                           r"今日|明天|明日|即将|下周|本周|推出|携手|合作|活动|"
                           r"套餐|周边|兑换|领取|抢购|秒杀|首发|新品|登陆|全国|"
                           r"门店|回归|来袭|定档|联名款|联名系列|正式|同步)")
+# 硬羊毛词：命中即视为「确定能薅」，不再要求信息性闸门（购物晒单/个人感叹本身即价值）。
+# 与 MILKTEA_DEAL 的区别：MILKTEA_DEAL 含联名/联动等「软信号」，需配信息性闸门防噪音；
+# 这里的词是「买一送一/免费/半价」这类确定动作，出现即可信，跳过信息性闸门更不易漏。
+MILKTEA_HARD_DEAL = re.compile(
+    r"买一送一|买1送1|免费|免单|第二杯|第二件|半价|"
+    r"(?<!\d)(0元|1元|9\.9|9块9)|买赠|附赠|赠送|赠品|(?<!捐)赠|随杯|"
+    r"抽奖|抽送|免邮|包邮|兑换|领取|福利|羊毛|秒杀|特价|优惠|立减|满减|"
+    r"送.{0,4}(周边|好礼|礼包|全套|杯|券|贴纸|徽章|公仔|盲盒|玩偶|挂件|明信片|海报|定制|帆布|钥匙扣|杯套)"
+)
 
 
 def get_milktea_cfg():
@@ -823,6 +832,14 @@ def fetch_milktea(browser=None):
                 pg.goto(f"https://m.weibo.cn/u/{uid}",
                         wait_until="domcontentloaded", timeout=25000)
                 pg.wait_for_timeout(3500)
+                # 官微主页为懒加载：下滑几次把更多微博加载进 DOM，
+                # 否则「买一送一」等稍靠后的促销微博可能在首屏之外被漏抓。
+                for _ in range(4):
+                    try:
+                        pg.mouse.wheel(0, 1000)
+                    except Exception:
+                        pass
+                    pg.wait_for_timeout(1000)
                 if _page_blocked(pg):
                     blocked = True
                     print("MILKTEA_BLOCKED", bname)
@@ -907,7 +924,9 @@ def fetch_milktea(browser=None):
                     hit = _hit(txt)
                     if not hit:
                         continue
-                    if info_re and not info_re.search(txt):
+                    # 软信号（联名/联动/IP/合作款）需配信息性闸门防个人日常噪音；
+                    # 硬羊毛词（买一送一/免费/半价…）本身即确定动作，跳过信息性闸门。
+                    if info_re and not MILKTEA_HARD_DEAL.search(txt) and not info_re.search(txt):
                         continue
                     who = ""
                     h3 = c.query_selector("h3.m-text-cut")

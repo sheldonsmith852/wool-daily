@@ -7,6 +7,11 @@
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 
+# 先拉取最新代码（公开仓库，HTTPS 匿名 pull 即可），确保 cron 跑的是 GitHub 上的最新版，
+# 避免「本地改了代码、服务器却一直在跑旧版」的部署脱节（历史 bug：推送 8b14a8d 后服务器
+# 一直停在手动同步的 e1485f5，导致买一送一闸门从未上线）。
+git pull --ff-only --quiet 2>/dev/null || true
+
 # 优先用项目内 venv，否则回退系统 python3
 if [ -x ./venv/bin/python ]; then
   PY=./venv/bin/python
