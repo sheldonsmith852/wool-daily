@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from html import escape as _esc
+from html import unescape as _unesc
 
 import requests
 from bs4 import BeautifulSoup
@@ -752,6 +753,70 @@ def _wb_cards(pg):
     return out
 
 
+def _wb_api_time(s, now):
+    """解析微博官方接口的 created_at，如 「Fri Sep 11 14:00:17 +0800 2026」。
+
+    接口给的是带时区的绝对时间，比页面上「9-9 11:47 / 10小时前」可靠得多。
+    转成本地时区的 naive datetime，与 datetime.now() 同口径（避免 +8 小时错位）。
+    """
+    try:
+        d = _dt.datetime.strptime((s or "").strip(), "%a %b %d %H:%M:%S %z %Y")
+    except Exception:
+        return None
+    return d.astimezone().replace(tzinfo=None)
+
+
+def _wb_api_cards(pg, uid, page=1):
+    """在页面内 fetch 微博官方时间线接口，返回 [(created_at, 正文, 链接)]。
+
+    为什么不再靠 DOM 解析（_wb_cards）：m.weibo.cn 用户主页的卡片是「逐步水合」的，
+    实测 10~11 张首屏卡里有 3~9 张取不到 a[href*="/status/"]，这些条目会被
+    「缺链接」整条丢弃 —— 霸王茶姬 9/7 那条迪士尼公主联名就是这么丢的
+    （霸王茶姬首屏 11 条里 3 条缺链接、喜茶 5 条、瑞幸 9 条）。
+    接口返回的 id/text/created_at 字段完整，且时间精确。
+    注意：接口对未登录用户只给第 1 页（page=2 起返回空），故不做翻页。
+    """
+    url = ("https://m.weibo.cn/api/container/getIndex?containerid=107603"
+           + str(uid) + "&page=" + str(page))
+    try:
+        data = pg.evaluate(
+            "async (u) => { try { const r = await fetch(u, "
+            "{headers: {'X-Requested-With': 'XMLHttpRequest'}}); "
+            "if (!r.ok) return {__e: r.status}; return await r.json(); } "
+            "catch (e) { return {__e: -1}; } }", url)
+    except Exception:
+        return []
+    if not isinstance(data, dict) or data.get("__e"):
+        return []
+    out = []
+    for c in ((data.get("data") or {}).get("cards") or []):
+        mb = c.get("mblog") or {}
+        mid = mb.get("id") or ""
+        if not mid:
+            continue
+        raw = mb.get("longText") or mb.get("text") or ""
+        txt = re.sub(r"\s+", " ", _unesc(re.sub(r"<[^>]+>", " ", raw))).strip()
+        if len(txt) < 10:
+            continue
+        out.append((mb.get("created_at") or "", txt,
+                    "https://m.weibo.cn/status/" + str(mid)))
+    return out
+
+
+def _official_rows(pg, uid, now):
+    """官微时间线条目 [(datetime, 正文, 链接)]；datetime 为 None 表示无法判时效。
+
+    优先走官方接口（字段完整、时间精确、不受卡片水合影响）；
+    接口不可用时退回 DOM 解析（_wb_cards + 相对/绝对时间解析）。
+    """
+    rows = _wb_api_cards(pg, uid)
+    if rows:
+        return [(_wb_api_time(t, now), x, h) for t, x, h in rows]
+    return [(_wb_rel_time(t, now), x,
+             ("https://m.weibo.cn" + h if h.startswith("/") else h))
+            for t, x, h in _wb_cards(pg)]
+
+
 def _pick_title(txt, brand_re=None, deal_re=None):
     """标题选句：优先「同时含品牌+羊毛价值词」的句子 → 含价值词的句子 → 首句，截断 50 字。
     避免把整段营销文案塞进日报表格，且让「免费/买一送一/联名」一眼可见。"""
@@ -785,7 +850,7 @@ def fetch_milktea(browser=None):
     mc = get_milktea_cfg()
     now = _dt.datetime.now()
     cutoff = now - _dt.timedelta(hours=mc["max_age_hours"])
-    topic_neg_re = re.compile("(" + "|".join(re.escape(w) for w in mc["topic_neg"]) + ")")
+    # 注：官微路不套 topic_neg（那套生活噪音词是给小红书用的，会误杀品牌官宣，见下方循环）。
     # 羊毛价值闸门：全文命中才算「能薅」。命中的词会写进 detail 列，便于日报里一眼判断。
     deal_re = mc.get("_deal_re") or MILKTEA_DEAL
 
@@ -813,18 +878,14 @@ def fetch_milktea(browser=None):
             try:
                 pg.goto(f"https://m.weibo.cn/u/{uid}",
                         wait_until="domcontentloaded", timeout=25000)
-                pg.wait_for_timeout(3500)
+                pg.wait_for_timeout(2500)
                 if _page_blocked(pg):
                     blocked_o = True
                     print("MILKTEA_BLOCKED_OFFICIAL", bname)
                     break
-                for tstr, txt, href in _wb_cards(pg):
-                    if not href or len(txt) < 10:
+                for dt, txt, link in _official_rows(pg, uid, now):
+                    if not link or len(txt) < 10 or link in seen_urls:
                         continue
-                    link = "https://m.weibo.cn" + href if href.startswith("/") else href
-                    if link in seen_urls:
-                        continue
-                    dt = _wb_rel_time(tstr, now)
                     if dt is None or dt < cutoff:
                         continue
                     # 官微也必须过羊毛价值闸门：官微同样会发「新品上新」「品牌日常」，
@@ -832,8 +893,9 @@ def fetch_milktea(browser=None):
                     hit = _hit(txt)
                     if not hit:
                         continue
-                    if topic_neg_re.search(txt):
-                        continue
+                    # 这里不再套 topic_neg：那套负向词（头发/美甲/穿搭/宠物…）是给
+                    # 小红书生活内容设计的，用在品牌官宣上会误杀 —— 实测霸王茶姬
+                    # 「适合和迪士尼公主们见一面…搭配」被「搭配」命中，整条被丢掉。
                     # 官微本身即品牌，无需品牌名闸门；官宣文案也不一定带信息性词，故不加。
                     seen_urls.add(link)
                     # 分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
@@ -850,7 +912,7 @@ def fetch_milktea(browser=None):
                         "confidence": "🟢",
                         "source": "milktea",
                         "date": dt.strftime("%Y-%m-%d"),
-                        "date_raw": tstr,
+                        "date_raw": dt.strftime("%Y-%m-%d"),
                         "_force_type": ftype,
                     })
             except Exception as e:
