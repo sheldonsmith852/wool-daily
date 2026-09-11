@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """pipeline.py 单元测试（纯函数层）。运行：python test_pipeline.py"""
 import datetime as _dt
+import re
 import unittest
 
 import pipeline as P
@@ -105,6 +106,25 @@ class TestMilkteaGates(unittest.TestCase):
             "凭学生证认证【霸气学生卡】可得招牌饮品第2件半价券*1", self.deal, self.lot)
         self.assertTrue(ok)
         self.assertEqual(ftype, "🥤 奶茶饮品")
+
+    def test_title_skips_lottery_tail(self):
+        # 联名公告末尾常挂「关注＋转发，揪N位送周边」，标题须落在含品牌名的正文句，
+        # 不能落在抽奖落款上（否则读者误以为这条只是抽奖）。
+        brand_re = re.compile(r"奈雪的茶|奈雪")
+        txt = ("豚式生活，自然「奈」么好！9月10日，来奈雪与豚豚崽一起解锁松弛～ "
+               "✨关注＋转发，揪5位朋友送全套萌物周边！🥤联名蔬果酸奶昔：超能牛油果酸奶昔")
+        t = P._pick_title(P._norm_text(txt), brand_re, self.deal, self.lot)
+        self.assertNotIn("揪", t)
+        self.assertIn("豚豚崽", t)
+
+    def test_title_prefers_link_sentence(self):
+        # 品牌名与联名词同句时优先选该句（活动正文，而非产品列表行）。
+        brand_re = re.compile(r"奈雪的茶|奈雪")
+        txt = ("亲爱的管理员：属于你的下午茶补给，即将送达。奈雪× @明日方舟终末地 联名活动，"
+               "9月23日正式上线！关注 @奈雪的茶 并转发，抽20位管理员喝联名茶饮")
+        t = P._pick_title(P._norm_text(txt), brand_re, self.deal, self.lot)
+        self.assertIn("明日方舟", t)
+        self.assertNotIn("抽", t)
 
 
 class TestNormDate(unittest.TestCase):

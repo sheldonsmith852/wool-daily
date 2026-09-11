@@ -887,23 +887,44 @@ def _official_rows(pg, uid, now):
             for t, x, h in _wb_cards(pg)]
 
 
-def _pick_title(txt, brand_re=None, deal_re=None):
-    """标题选句：优先「同时含品牌+羊毛价值词」的句子 → 含价值词的句子 → 首句，截断 50 字。
-    避免把整段营销文案塞进日报表格，且让「免费/买一送一/联名」一眼可见。"""
+def _pick_title(txt, brand_re=None, deal_re=None, neg_re=None):
+    """标题选句：优先含品牌名的正文句 → 含价值词的句子 → 首句，截断 50 字。
+
+    两级避让（顺序敏感，故抽成独立函数便于回归）：
+    ① 先跳过「抽奖落款句」（含 neg_re 的句子）——官微联名公告末尾常挂
+       「关注＋转发，揪5位送周边」，若选进标题会让人误以为这条只是抽奖
+       （用户刚要求排除抽奖类，标题里再出现即误导）；
+    ② 品牌句优先于价值词句 —— 否则「联名蔬果酸奶昔：」这类产品列表行会被选成
+       标题，而「9月10日，来奈雪与豚豚崽一起解锁松弛」才是真正的活动正文。
+    若所有候选句都带抽奖落款，退回不避让的原逻辑，保证总能出标题。
+    """
     deal_re = deal_re or MILKTEA_DEAL
-    sents = [s.strip() for s in re.split(r"[。！？\n]|[\U0001F300-\U0001FAFF]", txt)
-             if len(s.strip()) >= 6]
-    if brand_re:
+    # 分割符：句末标点 + 常见 emoji/符号区。范围必须够宽 —— 原先只写了
+    # [\U0001F300-\U0001FAFF]，漏掉 ✨(U+2728)/✖(U+2716) 等 2600–27BF 区符号，
+    # 结果「…解锁松弛～ ✨关注＋转发，揪5位送周边」被并成一句、含「揪」被整句跳过。
+    sents = [s.strip() for s in re.split(
+        r"[。！？\n]|[\U0001F000-\U0001FAFF\U00002190-\U000021FF"
+        r"\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE0F]", txt)
+        if len(s.strip()) >= 6]
+
+    def _pick(pred, skip_neg):
         for _s in sents:
-            if brand_re.search(_s) and deal_re.search(_s):
+            if skip_neg and neg_re and neg_re.search(_s):
+                continue
+            if pred(_s):
                 return _s[:50]
-    for _s in sents:
-        if deal_re.search(_s):
-            return _s[:50]
+        return None
+
+    cands = []
     if brand_re:
-        for _s in sents:
-            if brand_re.search(_s):
-                return _s[:50]
+        cands.append(lambda s: brand_re.search(s) and deal_re.search(s))
+        cands.append(lambda s: brand_re.search(s))
+    cands.append(lambda s: deal_re.search(s))
+    for skip in (True, False):
+        for pred in cands:
+            r = _pick(pred, skip)
+            if r:
+                return r
     return (sents[0] if sents else txt)[:50]
 
 
@@ -939,12 +960,15 @@ def fetch_milktea(browser=None):
         # ---- 品牌官微时间线（官宣第一手，唯一来源 → 置信度 🟢）----
         # uid 必须逐个核对粉丝量与「微博认证」：m.weibo.cn/n/<昵称> 会重定向到同名
         # 山寨号（实测「瑞幸咖啡」「霸王茶姬」「茶百道」都撞到粉丝个位数的假号）。
-        # 注：m.weibo.cn 用户主页是 SPA，滚动会触发整页 DOM 重渲染、卡片节点整体失效，
-        # 故不滚动，只取首屏已渲染卡片（官宣/联名多在最新或置顶，足够）。
+        # 抓取走官方时间线接口（_official_rows），不再解析 SPA 卡片 —— 主页卡片是逐步
+        # 水合的，靠 DOM 取链接会丢掉四到八成条目（详见 _official_rows 文档串）。
         # 品牌顺序即优先级：奈雪/喜茶/霸王茶姬 在前（见 MILKTEA_DEFAULTS.brand_uids）。
         for bname, uid in mc.get("brand_uids") or []:
             if blocked_o:
                 break
+            # 品牌名正则：官微正文常用简称（写「奈雪」而非「奈雪的茶」），故同时匹配
+            # 全名与前两字简称，供 _pick_title 优先选「含品牌名的正文句」当标题。
+            brand_re = re.compile(re.escape(bname) + "|" + re.escape(bname[:2]))
             try:
                 pg.goto(f"https://m.weibo.cn/u/{uid}",
                         wait_until="domcontentloaded", timeout=25000)
@@ -972,7 +996,7 @@ def fetch_milktea(browser=None):
                         "platform": bname,
                         "category": "奶茶官微",
                         "city": "",
-                        "title": _pick_title(_norm_text(txt), None, deal_re),
+                        "title": _pick_title(_norm_text(txt), brand_re, deal_re, lottery_re),
                         "detail": "官微·" + hit,
                         "url": link,
                         "confidence": "🟢",
