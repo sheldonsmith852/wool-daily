@@ -183,13 +183,16 @@ def classify(d):
     for label, kws in TYPE_RULES:
         for kw in kws:
             if kw.lower() in text:
-                # 羊毛村的奶茶类线报改归「🛒 电商券」：奶茶两区只留微博官号内容。
-                # 这些线报（如「移动秒杀喜茶买一送一券」）本身仍可薅，只是不再进奶茶饮品区。
-                if label == "🥤 奶茶饮品" and d.get("source") in ("ym2.cc", "ymnnc.com"):
-                    # 打标记：选取时给这组「羊毛村奶茶线报」保留独立配额，
-                    # 否则会被什么值得买的当日商品按日期挤掉（详见 select_deals）。
-                    d["_ym_milktea"] = True
-                    return "🛒 电商券"
+                if label == "🥤 奶茶饮品":
+                    src = d.get("source")
+                    # 羊毛村奶茶线报改归「🛒 电商券」：这些线报仍可薅，只是不再进奶茶饮品区。
+                    if src in ("ym2.cc", "ymnnc.com"):
+                        d["_ym_milktea"] = True  # 选取时保留独立配额（见 select_deals）
+                        return "🛒 电商券"
+                    # 「🥤 奶茶饮品」只由微博官号（source=milktea）供内容：
+                    # 其他源命中奶茶词不再归此类，继续往下匹配（如什么值得买「加多宝凉茶」→📦 其他）。
+                    if src != "milktea":
+                        break
                 return label
     # 电商聚合源（SMZDM/联盟）未命中具体类型时，统一归「电商券」
     if d.get("source") in ("smzdm", "pdd"):
@@ -1114,12 +1117,15 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
     for d in kept:
         by_source[d["source"]].append(d)
 
-    # 羊毛村（platform=羊毛村）配额：按日期取最近 N 条
-    # （羊毛村已不再产出「🥤 奶茶饮品」，其奶茶类线报改归「🛒 电商券」，详见 classify）
+    # 羊毛村（platform=羊毛村）配额：优先保奶茶线报，再按日期取最近 N 条。
+    # 奶茶线报改归「🛒 电商券」后仍是日报重点，若不优先会被同源更晚的线报挤出配额
+    # （羊毛村每日线报量很大，纯按日期排序时较早的奶茶线报挤不进前 20）。
     YM_CAP = sc["yangmaocun_cap"]
     ym_items = next((v for v in by_source.values()
                      if v and v[0].get("platform") == "羊毛村"), [])
-    ym_sorted = sorted(ym_items, key=lambda d: d.get("date") or "0000-00-00",
+    ym_sorted = sorted(ym_items,
+                       key=lambda d: (1 if d.get("_ym_milktea") else 0,
+                                      d.get("date") or "0000-00-00"),
                        reverse=True)
     ym_keep = {id(x) for x in ym_sorted[:YM_CAP]}
     capped = [d for d in kept

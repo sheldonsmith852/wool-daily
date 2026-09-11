@@ -9,8 +9,22 @@ import pipeline as P
 
 class TestClassify(unittest.TestCase):
     def test_tea(self):
-        self.assertEqual(P.classify({"title": "喜茶买一送一", "detail": ""}),
-                         "🥤 奶茶饮品")
+        # 「🥤 奶茶饮品」只由微博官号（source=milktea）供内容
+        self.assertEqual(
+            P.classify({"title": "喜茶买一送一", "detail": "", "source": "milktea"}),
+            "🥤 奶茶饮品")
+
+    def test_tea_non_official_not_drink(self):
+        # 非官号命中奶茶词不得进「🥤 奶茶饮品」区（如什么值得买「加多宝凉茶」）
+        self.assertNotEqual(
+            P.classify({"title": "加多宝凉茶", "detail": "", "source": "smzdm"}),
+            "🥤 奶茶饮品")
+
+    def test_yangmaocun_milktea_to_ecoupon(self):
+        # 羊毛村奶茶线报改归「🛒 电商券」，并打上配额保护标记
+        d = {"title": "瑞幸咖啡免费抽1万份饮品免单", "detail": "", "source": "ym2.cc"}
+        self.assertEqual(P.classify(d), "🛒 电商券")
+        self.assertTrue(d.get("_ym_milktea"))
 
     def test_force_type(self):
         self.assertEqual(
