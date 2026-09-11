@@ -117,6 +117,22 @@ class TestMilkteaGates(unittest.TestCase):
             _, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
             self.assertNotEqual(ftype, "🧋 奶茶联名", c)
 
+    def test_verdict_x_not_recipe(self):
+        # 回归：原料配比不是联名。早前 × 右侧放行普通中文，把古茗
+        # 「福建单芽×广西横州伏花茉莉 HPP冷压」这种配料表收进了联名区。
+        for c in ("1KG茶坯× 12000朵以上茉莉花窨制，高品质福建单芽×广西横州伏花茉莉 HPP冷压",
+                  "每杯含3.5g茶叶×2包，冷热皆宜"):
+            _, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertNotEqual(ftype, "🧋 奶茶联名", c)
+
+    def test_verdict_x_still_catches_work_name(self):
+        # 收紧后真联名仍须命中：× 后接书名号作品名 / @账号
+        for c in ("茶百道 ×《天官赐福》动画 9月12日10:00起正式开启",
+                  "奈雪× @明日方舟终末地 9月23日正式上线，关注并转发抽20位"):
+            ok, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🧋 奶茶联名", c)
+
     def test_verdict_other_link_words(self):
         for c in ("古茗跨界合作，敦煌研究院主题杯套上线",
                   "瑞幸联合出品《时光代理人》主题杯"):
