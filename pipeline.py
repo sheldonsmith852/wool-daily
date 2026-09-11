@@ -688,31 +688,51 @@ def _page_blocked(pg):
 
 
 def _wb_rel_time(s, now):
-    """把微博相对时间解析为 datetime，解析不了返回 None（无法判时效的条目宁可丢弃）。
-    支持：X秒前 / X分钟前 / X小时前 / X天前 / 今天 HH:MM / 昨天 HH:MM / MM-DD / YYYY-MM-DD。"""
+    """把微博相对/绝对时间解析为 datetime，解析不了返回 None（无法判时效的条目宁可丢弃）。
+
+    支持：刚刚 / X秒前 / X分钟前 / X小时前 / X天前 / 今天 HH:MM / 昨天 HH:MM /
+          MM-DD / MM-DD HH:MM / YYYY-MM-DD / YYYY-MM-DD HH:MM。
+
+    为什么必须支持带时分的 MM-DD：m.weibo.cn 用户主页（官微时间线）的 span.time
+    基本都是「9-9 11:47」这种 **MM-DD HH:MM** 格式，只有近期几条才显示「10小时前」。
+    早期正则漏写了 ` HH:MM` 后缀，导致带时分的整条被判「无时间」丢弃——
+    实测奈雪首屏 10 条只有 1 条能通过、霸王茶姬 11 条只有 2 条能通过，
+    九成官微帖在时间闸门就被扔掉，这是官微覆盖率的最大损失点。"""
     s = (s or "").strip()
     if not s:
         return None
+    if s in ("刚刚", "刚刚发布"):
+        return now
     for unit, kw in (("seconds", "秒"), ("minutes", "分钟"), ("hours", "小时"), ("days", "天")):
         m = re.match(r"^(\d+)%s前$" % kw, s)
         if m:
             return now - _dt.timedelta(**{unit: int(m.group(1))})
+    m = re.match(r"^(今天|昨天)\s+(\d{1,2}):(\d{2})$", s)
+    if m:
+        base = now if m.group(1) == "今天" else now - _dt.timedelta(days=1)
+        return base.replace(hour=int(m.group(2)), minute=int(m.group(3)),
+                            second=0, microsecond=0)
     if s.startswith("今天"):
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
     if s.startswith("昨天"):
         return (now - _dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
+    # 绝对日期：MM-DD / MM-DD HH:MM / YYYY-MM-DD / YYYY-MM-DD HH:MM（尾巴上的时分可选）
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{2})?$", s)
     if m:
         try:
             return _dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except Exception:
             return None
-    m = re.match(r"^(\d{1,2})-(\d{1,2})$", s)
+    m = re.match(r"^(\d{1,2})-(\d{1,2})(?:\s+\d{1,2}:\d{2})?$", s)
     if m:
         try:
-            return _dt.datetime(now.year, int(m.group(1)), int(m.group(2)))
+            d = _dt.datetime(now.year, int(m.group(1)), int(m.group(2)))
         except Exception:
             return None
+        # 跨年：1 月看到「12-30」应归属去年，否则会解析成未来时间而漏收
+        if d > now + _dt.timedelta(days=1):
+            d = d.replace(year=now.year - 1)
+        return d
     return None
 
 
