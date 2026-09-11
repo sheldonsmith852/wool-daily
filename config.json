@@ -8,6 +8,7 @@
     "per_type": 8,
     "max": 40,
     "smzdm_per_type": 5,
+    "ym_ecoupon_quota": 5,
     "smzdm_cap": 10,
     "yangmaocun_cap": 20,
     "yangmaocun_max_age_days": 10,

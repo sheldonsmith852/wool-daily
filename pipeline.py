@@ -186,6 +186,9 @@ def classify(d):
                 # 羊毛村的奶茶类线报改归「🛒 电商券」：奶茶两区只留微博官号内容。
                 # 这些线报（如「移动秒杀喜茶买一送一券」）本身仍可薅，只是不再进奶茶饮品区。
                 if label == "🥤 奶茶饮品" and d.get("source") in ("ym2.cc", "ymnnc.com"):
+                    # 打标记：选取时给这组「羊毛村奶茶线报」保留独立配额，
+                    # 否则会被什么值得买的当日商品按日期挤掉（详见 select_deals）。
+                    d["_ym_milktea"] = True
                     return "🛒 电商券"
                 return label
     # 电商聚合源（SMZDM/联盟）未命中具体类型时，统一归「电商券」
@@ -1047,6 +1050,7 @@ SELECT_DEFAULTS = {
     "per_type": 10,                  # 每类展示上限（控制总量，优质优先）
     "max": 40,                       # 日报总条目上限（宁少勿滥）
     "smzdm_per_type": 5,             # 电商券（卖东西）类特别限量
+    "ym_ecoupon_quota": 5,           # 羊毛村奶茶线报（改归电商券）保留名额，防被什么值得买挤掉
     "smzdm_cap": 10,                 # 什么值得买源级总上限（避免该源霸屏）
     "yangmaocun_cap": 20,            # 羊毛村最多展示条数
     "yangmaocun_max_age_days": 10,   # 羊毛村仅保留 N 天内有明确日期的线报
@@ -1163,6 +1167,14 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             by_type[_t].sort(
                 key=lambda d: 0 if d.get("platform") in MILKTEA_TOP_BRANDS else 1)
 
+    # 🛒 电商券：拆成「羊毛村奶茶线报（由奶茶饮品改归而来）」与「什么值得买商品」两组，
+    # 前者先按配额保留——否则当日扎堆的什么值得买会把羊毛村线报整个挤掉。
+    _ec = by_type.get("🛒 电商券")
+    if _ec:
+        _ym_ec = [d for d in _ec if d.get("_ym_milktea")]
+        _other_ec = [d for d in _ec if not d.get("_ym_milktea")]
+        by_type["🛒 电商券"] = _ym_ec[:sc["ym_ecoupon_quota"]] + _other_ec
+
     out = []
     seen_ids = set()
     for d in guaranteed:
@@ -1171,7 +1183,7 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             seen_ids.add(id(d))
 
     type_cap = {**{t: sc["per_type"] for t in SELECT_PRIORITY},
-                "🛒 电商券": sc["smzdm_per_type"]}
+                "🛒 电商券": sc["smzdm_per_type"] + sc["ym_ecoupon_quota"]}
     for t in SELECT_PRIORITY:
         if len(out) >= sc["max"]:
             break
