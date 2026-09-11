@@ -228,6 +228,73 @@ class TestSelectDeals(unittest.TestCase):
         self.assertEqual(len(out), 0)
 
 
+class TestDedupSameEvent(unittest.TestCase):
+    """官微「同一活动只留一条」：判据是品牌+联名对象专名，不是 url（同一活动是多条微博）。"""
+
+    @staticmethod
+    def _mk(platform, title, date, mid="1", source="milktea",
+            ttype="🧋 奶茶联名"):
+        return {"platform": platform, "source": source, "type": ttype,
+                "title": title, "url": f"https://m.weibo.cn/status/{mid}",
+                "date": date, "confidence": "🟢"}
+
+    def test_three_posts_same_event(self):
+        # 实测：茶百道 ×《天官赐福》一天发 3 条，标题/url 都不同，make_hash 全放过
+        deals = [
+            self._mk("茶百道", "#茶百道# #茶百道联名天官赐福# #茶百道联名# "
+                     "#茶百道咖啡# 茶百道ChaPanda的微博视频", "2026-09-11", "3"),
+            self._mk("茶百道", "9月12日起，茶百道 ×《天官赐福》动画联名 旗舰店同步上线",
+                     "2026-09-11", "2"),
+            self._mk("茶百道", "茶百道 ×《天官赐福》动画联名 9月12日10:00起正式开启",
+                     "2026-09-11", "1"),
+        ]
+        out = P.dedup_same_event(deals)
+        self.assertEqual(len(out), 1)
+        self.assertIn("天官赐福", out[0]["title"])
+        # 时间戳最大的那条恰是纯话题标签堆砌的视频帖，不能留它
+        self.assertNotIn("微博视频", out[0]["title"])
+
+    def test_cross_date_keeps_latest(self):
+        # 霸王茶姬 × 迪士尼公主跨 09-07/09-09 两波：只保留最新进展
+        deals = [
+            self._mk("霸王茶姬", "霸王茶姬联名迪士尼公主轻因系列，第二波周边今日",
+                     "2026-09-09"),
+            self._mk("霸王茶姬", "一种很新的po图方式～ 美到心动的 "
+                     "#霸王茶姬迪士尼公主联名# 更低咖啡因*，轻因*不扰眠 下午想喝",
+                     "2026-09-07"),
+        ]
+        out = P.dedup_same_event(deals)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["date"], "2026-09-09")
+
+    def test_different_ip_kept(self):
+        # 同品牌不同联名对象不得合并
+        deals = [
+            self._mk("奈雪的茶", "奈雪× @明日方舟终末地 联名活动，9月23日正式上线",
+                     "2026-09-11"),
+            self._mk("奈雪的茶", "9月10日，来奈雪与豚豚崽一起解锁松弛～", "2026-09-10"),
+        ]
+        self.assertEqual(len(P.dedup_same_event(deals)), 2)
+
+    def test_other_source_untouched(self):
+        # 二手源不动：羊毛村「活动帖」与「领取攻略」各有价值
+        deals = [
+            self._mk("羊毛村", "瑞幸咖啡免费抽1万份饮品免单", "2026-09-09",
+                     source="ym2.cc", ttype="🛒 电商券"),
+            self._mk("羊毛村", "Marvis-0元喝瑞幸｜电脑端详细领取攻略", "2026-09-09",
+                     source="ym2.cc", ttype="🛒 电商券"),
+        ]
+        self.assertEqual(len(P.dedup_same_event(deals)), 2)
+
+    def test_no_event_key_kept(self):
+        # 提取不到专名时不参与合并（保守，宁可多留不可错合）
+        deals = [
+            self._mk("古茗茶饮", "秋日新品温暖上市，欢迎品尝", "2026-09-11"),
+            self._mk("古茗茶饮", "门店装修公告", "2026-09-11"),
+        ]
+        self.assertEqual(len(P.dedup_same_event(deals)), 2)
+
+
 class TestEndDate(unittest.TestCase):
     """银行活动的「截止日」不是发布日：存 date_end，展示「至MM-DD」且不占今天的位置。"""
 

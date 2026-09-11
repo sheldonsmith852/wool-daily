@@ -1252,6 +1252,106 @@ def make_hash(d):
 
 
 # 日报展示：优先用户关心的类型，每类取最新若干，总量封顶（防噪音+PushPlus 限额）
+# ---- 同一活动去重（官微联名区专用）----
+# 为什么现有 make_hash 抓不到：它按 source+title+url 判重，而「同一活动」在官微上是
+# **多条不同的微博** —— url 不同、标题也不同。实测茶百道 ×《天官赐福》一天发 3 条
+# （视频帖 + 两条公告帖）全部通过判重，联名区被同一活动刷掉 3 行。
+# 重复的粒度是「活动」不是「微博」，判据 = 品牌 + 联名对象（专名）。
+#
+# 官微恰好有两个强信号可以用：
+#   · 话题标签：#茶百道联名天官赐福#  → 天官赐福
+#   · × 写法  ：茶百道 ×《天官赐福》  → 天官赐福
+# 都取不到时退回「整个标题去掉品牌名与通用词」，也能得到可用专名
+# （「霸王茶姬联名迪士尼公主轻因系列」→「迪士尼公主轻因」）。
+_LINK_TAG = re.compile(r"#([^#\s]{2,24})#")
+_LINK_X_NAME = re.compile(r"[×✕]\s*([^\s，。、（）()]{2,16})")
+# 通用词：会出现在话题标签/标题里、但不构成「联名对象」的成分，需剔除。
+# 只收真正通用的营销词，不针对个别帖子硬编码（否则换个联名就失效）。
+_LINK_STOP = re.compile(
+    r"(联名|联动|合作款|上线|正式|开启|同步|旗舰店|系列|周边|今日|视频|微博|"
+    r"活动|限定|新品|预售|开售|发售|全国|门店|主题|第二波|第一波|即将|营业|"
+    r"来袭|登场|咖啡|茶饮|奶茶|品牌|官方|预告|时间|地址|攻略|福利|免费)")
+_KEY_STRIP = re.compile(r"[#《》「」【】\*\s，。、！？!?~～·\-—]")
+
+
+def _event_key(d):
+    """提取「同一活动」的判据：联名对象专名；提取不到返回 ""（不参与合并）。
+
+    截断 6 字是为了吸收写法差异（「天官赐福」vs「天官赐福动画」），
+    配合 _same_event 的子串判断即可归为同一活动。
+    """
+    title = d.get("title") or ""
+    brand = d.get("platform") or ""
+    cands = [m.group(1) for m in _LINK_TAG.finditer(title)]
+    cands += [m.group(1) for m in _LINK_X_NAME.finditer(title)]
+    cands.append(title)  # 兜底：整条标题去品牌去通用词后剩下的即专名
+    for c in cands:
+        s = c
+        for b in (brand, brand[:2]):
+            if b:
+                s = s.replace(b, "")
+        s = _KEY_STRIP.sub("", _LINK_STOP.sub("", s))
+        if len(s) >= 2:
+            return s[:6]
+    return ""
+
+
+def _same_event(k1, k2):
+    """两个专名是否指向同一活动：互为子串即视为相同（吸收前后缀差异）。"""
+    if not k1 or not k2:
+        return False
+    return k1 in k2 or k2 in k1
+
+
+def _title_score(d):
+    """标题信息量打分，用于同活动多条时挑出最值得展示的一条。
+
+    · 话题标签占比越低越好 —— 「#茶百道# #茶百道联名天官赐福#…ChaPanda的微博视频」
+      这种纯标签堆砌的标题读了等于没读。
+    · 含具体日期/时间（9月12日 / 10:00 / 周一）加分。
+    """
+    t = d.get("title") or ""
+    tag_len = sum(len(x) + 2 for x in _LINK_TAG.findall(t))
+    score = -2.0 * tag_len / max(len(t), 1)
+    if re.search(r"\d{1,2}月\d{1,2}日|\d{1,2}:\d{2}|周[一二三四五六日天]", t):
+        score += 1.0
+    return score
+
+
+def dedup_same_event(deals, sources=("milktea",), types=("🧋 奶茶联名",)):
+    """官微「同一活动只留一条」（用户口径：同 IP 只留最新一条）。
+
+    分组：品牌 + 专名（子串匹配）。
+    组内：先取**最新日期**那一组（跨日期的系列帖只保留最新进展）；
+          同日多条时按 _title_score 挑信息量最高的 —— 不能简单取时间戳最大那条，
+          实测茶百道那组最新发的恰是纯标签堆砌的视频帖。
+    范围：默认只作用于官微联名区，不动羊毛村等二手源
+          （二手源里「活动帖」与「领取攻略」各有价值，合并会丢信息）。
+    """
+    out = []
+    groups = []  # [(专名, [条目])]
+    for d in deals:
+        if d.get("source") not in sources or d.get("type") not in types:
+            out.append(d)
+            continue
+        k = _event_key(d)
+        if not k:
+            out.append(d)
+            continue
+        for gk, items in groups:
+            if items[0].get("platform") == d.get("platform") and _same_event(gk, k):
+                items.append(d)
+                break
+        else:
+            groups.append((k, [d]))
+    for _k, items in groups:
+        latest = max((x.get("date") or "") for x in items)
+        same_day = [x for x in items if (x.get("date") or "") == latest]
+        out.append(same_day[0] if len(same_day) == 1
+                   else max(same_day, key=_title_score))
+    return out
+
+
 # 类型顺序单一来源：选取优先级直接复用展示顺序 TYPE_ORDER，改一处即同步，避免漏改。
 SELECT_PRIORITY = TYPE_ORDER
 # 选取/限量参数：默认值在此定义，运行时被 config.json 的 "select" 段覆盖，调优无需改代码。
@@ -1754,6 +1854,8 @@ def main():
     for d in raw:
         d["type"] = classify(d)
     filtered = [d for d in raw if d["type"] not in BLOCKED_TYPES]
+    # 同一活动只留一条（官微联名区）：茶百道×天官赐福一天发 3 条会刷掉 3 行版面。
+    filtered = dedup_same_event(filtered)
 
     # 去重判新（全量标记，避免次日抖动）
     for d in filtered:
