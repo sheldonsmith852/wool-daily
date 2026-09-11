@@ -630,7 +630,7 @@ MILKTEA_DEFAULTS = {
 # 词表可在 config.json 的 milktea.deal_pos 覆盖，调词不用改代码。
 MILKTEA_DEAL = re.compile(
     r"(联名|联动|(?<![A-Za-z])IP(?![A-Za-z])|合作款|"
-    r"免费|免单|买一送一|买1送1|第二杯|第二件|半价|"
+    r"免费|免单|买\s*[1一]\s*送\s*[1一]|第二杯|第二件|半价|"
     r"(?<!\d)(0元|1元|9\.9|9块9)|买赠|附赠|赠送|赠品|(?<!捐)赠|随杯|加价购|"
     r"抽奖|抽送|揪.{0,6}(位|个|名)|免邮|包邮|兑换|领取|福利|羊毛|秒杀|特价|优惠|立减|满减|"
     r"送.{0,4}(周边|好礼|礼包|全套|杯|券|贴纸|徽章|公仔|盲盒|玩偶|挂件|明信片|海报|定制|帆布|钥匙扣|杯套))"
@@ -642,6 +642,34 @@ MILKTEA_LINK = re.compile(r"(联名|联动|(?<![A-Za-z])IP(?![A-Za-z])|合作款
 # 高优品牌：日报排序时这三家排在其他品牌之前，其后按发布时间倒序。
 # 名称必须与 brand_uids 里的品牌名一致（即条目的 platform 字段）。
 MILKTEA_TOP_BRANDS = ("奈雪的茶", "喜茶", "霸王茶姬")
+
+# ---- 正文归一化：emoji/花式数字 → 普通数字（仅用于闸门匹配，不改动展示原文）----
+# 官微（尤其霸王茶姬）常把「买一送一」写成「买1️⃣送1️⃣」。这类 emoji 数字是
+# '1'(U+0031) + 变体选择符(U+FE0F) + keycap 组合符(U+20E3) 三个码位拼的，
+# 直接跑正则不命中 —— 2026-09-11 霸王茶姬「为郑钦文加油·全场买1️⃣送1️⃣」那条
+# 预告帖就是这样被价值闸门整条丢掉的（看起来像"官微没发"，实为解析漏收）。
+_VS_RE = re.compile(r"[\uFE0E\uFE0F\u20E3\u200B\u200C\u200D\u200E\u200F\u2060]")
+_FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _norm_text(t):
+    """去掉变体选择符/keycap 组合符/零宽字符并半角化数字。
+
+    「1️⃣」去掉 U+FE0F+U+20E3 后即「1」，于是「买1️⃣送1️⃣」等价于「买1送1」。
+    """
+    if not t:
+        return ""
+    return _VS_RE.sub("", t).translate(_FW_DIGITS)
+
+
+# 「抽奖/评论区送」负向闸门：要中奖才拿得到的内容一律丢弃（用户口径：根本抽不到我）。
+# 与正羊毛（买一送一/免费领/免单券/第二杯半价）严格区分 —— 后者确定可得，不在本表。
+# 覆盖：抽奖平台公告、转+关抽、评论区揪N位、随机抽N位、请喝N杯 等。
+# 词表可在 config.json 的 milktea.lottery_neg 覆盖，调词不用改代码。
+MILKTEA_LOTTERY_NEG = re.compile(
+    r"抽奖|抽送|免费抽|抽\d+位|抽\d+名|抽\d+个|揪\d+|揪.{0,3}位|"
+    r"送\d+位|请喝\d+杯|转.{0,3}关|关注.{0,5}(?:转发|抽)|转发.{0,5}抽|"
+    r"锦鲤|中奖|抽中")
 
 
 def get_milktea_cfg():
@@ -656,14 +684,25 @@ def get_milktea_cfg():
         cfg["topic_neg"] = u["topic_neg"]
     if u.get("deal_pos") and isinstance(u["deal_pos"], list):
         cfg["deal_pos"] = u["deal_pos"]
+    if u.get("lottery_neg") and isinstance(u["lottery_neg"], list):
+        cfg["lottery_neg"] = u["lottery_neg"]
     # 编译后的价值闸门。config 里配的是纯词表（re.escape 拼接），
     # 未配时用代码内置的正则版（含 IP 字母边界、「送XX」搭配等更严的写法）。
+    # 词表路额外补一条「买N送N」宽松式（容忍空格），与内置正则口径对齐。
     dp = cfg.get("deal_pos")
     try:
-        cfg["_deal_re"] = (re.compile("(" + "|".join(re.escape(w) for w in dp) + ")")
+        cfg["_deal_re"] = (re.compile("(" + "|".join(re.escape(w) for w in dp)
+                                      + r"|买\s*[1一]\s*送\s*[1一])")
                            if dp else MILKTEA_DEAL)
     except Exception:
         cfg["_deal_re"] = MILKTEA_DEAL
+    # 抽奖负向闸门：config 可覆盖词表，未配时用代码内置正则。
+    ln = cfg.get("lottery_neg")
+    try:
+        cfg["_lottery_re"] = (re.compile("(" + "|".join(re.escape(w) for w in ln) + ")")
+                              if ln else MILKTEA_LOTTERY_NEG)
+    except Exception:
+        cfg["_lottery_re"] = MILKTEA_LOTTERY_NEG
     if u.get("brand_uids") and isinstance(u["brand_uids"], list):
         cfg["brand_uids"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
                              for x in u["brand_uids"]]
@@ -852,10 +891,12 @@ def fetch_milktea(browser=None):
     cutoff = now - _dt.timedelta(hours=mc["max_age_hours"])
     # 注：官微路不套 topic_neg（那套生活噪音词是给小红书用的，会误杀品牌官宣，见下方循环）。
     # 羊毛价值闸门：全文命中才算「能薅」。命中的词会写进 detail 列，便于日报里一眼判断。
+    # 匹配一律走 _norm_text（emoji 数字归一化），否则「买1️⃣送1️⃣」这类官微写法会被漏掉。
     deal_re = mc.get("_deal_re") or MILKTEA_DEAL
+    lottery_re = mc.get("_lottery_re") or MILKTEA_LOTTERY_NEG
 
     def _hit(t):
-        m = deal_re.search(t or "")
+        m = deal_re.search(_norm_text(t or ""))
         return m.group(0) if m else ""
 
     own = browser is None
@@ -888,6 +929,10 @@ def fetch_milktea(browser=None):
                         continue
                     if dt is None or dt < cutoff:
                         continue
+                    # 抽奖/评论区送类：要中奖才拿得到，命中即丢（用户口径：根本抽不到我）。
+                    # 注意与正羊毛区分 —— 买一送一/免费领/免单券 是确定可得的，不在此列。
+                    if lottery_re.search(_norm_text(txt)):
+                        continue
                     # 官微也必须过羊毛价值闸门：官微同样会发「新品上新」「品牌日常」，
                     # 这些没有羊毛价值。命中词写进 detail 便于在日报里一眼看出薅点。
                     hit = _hit(txt)
@@ -900,13 +945,13 @@ def fetch_milktea(browser=None):
                     seen_urls.add(link)
                     # 分区：命中联名/联动 → 🧋 奶茶联名；只命中硬羊毛动作 → 🥤 奶茶饮品。
                     # 同时命中时归联动区（口径：联动专门放联动区）。
-                    ftype = ("🧋 奶茶联名" if MILKTEA_LINK.search(txt)
+                    ftype = ("🧋 奶茶联名" if MILKTEA_LINK.search(_norm_text(txt))
                              else "🥤 奶茶饮品")
                     deals.append({
                         "platform": bname,
                         "category": "奶茶官微",
                         "city": "",
-                        "title": _pick_title(txt, None, deal_re),
+                        "title": _pick_title(_norm_text(txt), None, deal_re),
                         "detail": "官微·" + hit,
                         "url": link,
                         "confidence": "🟢",

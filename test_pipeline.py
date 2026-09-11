@@ -42,6 +42,39 @@ class TestClassify(unittest.TestCase):
             "🛒 电商券")
 
 
+class TestMilkteaGates(unittest.TestCase):
+    """奶茶官微闸门：emoji 数字归一化 + 抽奖负向闸门（口径：抽不到我的不要）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cfg = P.get_milktea_cfg()
+        cls.deal = cfg["_deal_re"]
+        cls.lot = cfg["_lottery_re"]
+
+    def test_norm_emoji_digits(self):
+        # 官微常把「买一送一」写成「买1️⃣送1️⃣」，必须等价于「买1送1」，
+        # 否则整条会被价值闸门丢掉（霸王茶姬 2026-09-11 那条即如此漏抓）。
+        self.assertEqual(P._norm_text("买1️⃣送1️⃣"), "买1送1")
+        self.assertTrue(self.deal.search(P._norm_text("买1️⃣送1️⃣")))
+
+    def test_norm_fullwidth_digits(self):
+        self.assertEqual(P._norm_text("９月１１日"), "9月11日")
+
+    def test_lottery_killed(self):
+        for c in ("评论区揪5️⃣位朋友送奈雪30元福利券",
+                  "【转+关】9月12日请喝30杯「奶麻薯新品」",
+                  "微博官方唯一抽奖工具 @微博抽奖平台 对本次抽奖进行监督"):
+            self.assertTrue(self.lot.search(P._norm_text(c)), c)
+
+    def test_real_deal_not_killed(self):
+        # 确定可得的正羊毛不得被抽奖闸门误杀
+        for c in ("6000张新品免单券掉落",
+                  "小马管家请大家0元喝瑞幸啦",
+                  "明天，霸王茶姬全场饮品（含geelato），买1️⃣送1️⃣",
+                  "霸王茶姬联名迪士尼公主轻因系列，第二波周边今日上线"):
+            self.assertFalse(self.lot.search(P._norm_text(c)), c)
+
+
 class TestNormDate(unittest.TestCase):
     def test_cn(self):
         self.assertEqual(P.norm_date("2026年8月1日")[0], "2026-08-01")
