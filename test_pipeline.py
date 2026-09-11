@@ -197,5 +197,39 @@ class TestSelectDeals(unittest.TestCase):
         self.assertEqual(len(out), 0)
 
 
+class TestEndDate(unittest.TestCase):
+    """银行活动的「截止日」不是发布日：存 date_end，展示「至MM-DD」且不占今天的位置。"""
+
+    def test_pub_label_shows_end_date(self):
+        d = {"date": "2026-09-12", "date_end": "2026-12-31"}
+        self.assertEqual(P.pub_label(d), "至12-31")
+
+    def test_pub_label_normal(self):
+        today = _dt.date.today()
+        d = {"date": today.isoformat()}
+        self.assertEqual(P.pub_label(d), f"{today.isoformat()[5:]} · 今天")
+
+    def test_pub_label_no_date(self):
+        self.assertEqual(P.pub_label({}), "— · 日期未知")
+
+    def test_end_date_not_shown_as_today(self):
+        # 回归：早前未来日期会被 age_label 判成「今天」，显示成「12-31 · 今天」
+        d = {"date": "2026-12-31"}
+        self.assertEqual(P.age_label(d), "今天")          # 旧行为（仅 age_label 层）
+        d2 = {"date": _dt.date.today().isoformat(), "date_end": "2026-12-31"}
+        self.assertNotIn("今天", P.pub_label(d2))          # 新行为：不再冒充今天
+
+    def test_end_date_sinks_in_sort(self):
+        # 同日期下，带截止日的长期活动应排在今天真新闻之后，不抢版面
+        today = _dt.date.today().isoformat()
+        news = {"platform": "X", "source": "s", "title": "今日真新闻", "url": "a",
+                "date": today, "type": "📦 其他", "confidence": "🟢"}
+        long_run = {"platform": "工商银行", "source": "icbc", "title": "长期活动",
+                    "url": "b", "date": today, "date_end": "2026-12-31",
+                    "type": "💰 支付立减", "confidence": "🟢"}
+        out = P.select_deals([long_run, news], 30)
+        self.assertEqual([d["title"] for d in out], ["今日真新闻", "长期活动"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

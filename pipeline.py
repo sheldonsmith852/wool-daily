@@ -54,6 +54,19 @@ def esc(s):
     return _esc(str(s), quote=True)
 
 
+def pub_label(d):
+    """「发布」列文案：有活动截止日（date_end）时显示「至MM-DD」，否则显示「MM-DD · 距今」。
+
+    银行活动列表页给出的是「即日起至 2026-12-31」这类**截止日**而非发布日；
+    早前把它塞进 date，报告里就成了「12-31 · 今天」——既把截止日伪装成发布日，
+    又因负 age 逃过新鲜度过滤。现单独存 date_end，展示时如实写成「至12-31」。
+    """
+    end = d.get("date_end")
+    if end:
+        return "至" + end[5:]
+    return (d["date"][5:] if d.get("date") else "—") + " · " + age_label(d)
+
+
 def find_date_near(anchor, pattern):
     """从 anchor 向上找第一个文本含日期的祖先，返回匹配到的原始日期串。"""
     node = anchor
@@ -1081,16 +1094,25 @@ def fetch_icbc(browser=None):
             for it in items:
                 raw = it.get("ctx", "")
                 m = DATE.search(raw)
-                d = ""
+                # 银行优惠多为「常在售」，发布/生效日统一按今天计。
+                d = today.isoformat()
+                # 抓到的若是**未来**日期，那不是发布日而是活动**截止日**
+                # （工行列表页上下文里写的是「活动时间：即日起至 2026-12-31」）。
+                # 早前把它当发布日存进 date，造成三重问题：
+                #   ① 报告显示「12-31 · 今天」（age<0 被 age_label 一律判成"今天"）
+                #   ② 负 age 恒 <= max_age，新鲜度过滤永不淘汰
+                #   ③ 日期倒序下未来日期永远压过今天的真新闻
+                # 现单独存 date_end：展示为「至12-31」，排序时沉到同日期条目之后。
+                end_iso = ""
                 if m:
-                    d = m.group(0).replace("年", "-").replace("月", "-").replace("/", "-")
+                    cand = (m.group(0).replace("年", "-").replace("月", "-")
+                            .replace("/", "-"))
                     try:
-                        if _dt.date.fromisoformat(d) < today:
-                            d = today.isoformat()  # 过去起始日→常在售，刷新为今天
+                        p = _dt.date.fromisoformat(cand)
+                        if p > today:
+                            end_iso = p.isoformat()
                     except ValueError:
-                        d = today.isoformat()
-                else:
-                    d = today.isoformat()
+                        pass
                 deals.append({
                     "platform": "工商银行",
                     "category": "银行优惠",
@@ -1102,6 +1124,7 @@ def fetch_icbc(browser=None):
                     "source": "icbc",
                     "date": d,
                     "date_raw": d,
+                    "date_end": end_iso,
                 })
             print(f"ICBC_OK 抓取 {len(deals)} 条优惠活动")
         if browser is None:
@@ -1251,9 +1274,13 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
         except ValueError:
             return None
 
-    # 有日期的排前并倒序，无日期的沉底（保持原相对顺序）
-    deals_sorted = sorted(deals, key=lambda d: d.get("date") or "0000-00-00",
-                          reverse=True)
+    # 有日期的排前并倒序，无日期的沉底（保持原相对顺序）。
+    # 同日期内，带 date_end 的（银行长期活动，发布日实际未知）排到后面 ——
+    # 否则它们会和今天的真新闻并列、抢走版面（日期倒序下本该按真实新鲜度排）。
+    deals_sorted = sorted(
+        deals,
+        key=lambda d: (d.get("date") or "0000-00-00", 0 if d.get("date_end") else 1),
+        reverse=True)
 
     if max_age_days and max_age_days > 0:
         kept = [d for d in deals_sorted
@@ -1413,7 +1440,7 @@ def render(items, max_age=MAX_AGE_DAYS):
         lines.append("| 来源 | 发布 | 标题 | 置信 |")
         lines.append("|---|---|---|---|")
         for d, is_new in groups[t]:
-            pub = (d["date"][5:] if d.get("date") else "—") + " · " + age_label(d)
+            pub = pub_label(d)
             title = ("🆕 " + d["title"]) if is_new else d["title"]
             lines.append(
                 f"| {d['platform']} | {pub} | [{title}]({d['url']}) "
@@ -1444,7 +1471,7 @@ def render_html(items, max_age=MAX_AGE_DAYS):
             f'font-weight:bold">{esc(t)}（{len(groups[t])}）</td></tr>'
         )
         for d, is_new in groups[t]:
-            pub = (d["date"][5:] if d.get("date") else "—") + " · " + age_label(d)
+            pub = pub_label(d)
             parts.append(
                 "<tr>"
                 f"<td>{esc(d.get('platform', ''))}</td>"
@@ -1479,7 +1506,7 @@ def render_bot_md(items, max_age=MAX_AGE_DAYS):
         for d, is_new in groups[t]:
             title = ("🆕 " + d["title"]) if is_new else d["title"]
             lines.append(
-                f"- [{title}]({d['url']}) · {age_label(d)} · {d['confidence']}"
+                f"- [{title}]({d['url']}) · {pub_label(d)} · {d['confidence']}"
             )
         lines.append("")
         blocks.append("\n".join(lines))
