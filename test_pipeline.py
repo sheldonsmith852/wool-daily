@@ -101,6 +101,37 @@ class TestMilkteaGates(unittest.TestCase):
             ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
             self.assertFalse(ok, c)
 
+    def test_verdict_x_form_is_link(self):
+        # 「A × B」形态：正文可能通篇没有「联名」二字（只有奈雪×豚豚崽这类写法），
+        # 此时若不靠 × 识别，就会落到抽奖闸门被整条丢掉 —— 联名豁免形同虚设。
+        for c in ("茶百道 ×《天官赐福》动画 9月12日10:00起正式开启",
+                  "奈雪× @明日方舟终末地 9月23日正式上线！关注并转发，抽20位"):
+            ok, ftype, hit = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🧋 奶茶联名", c)
+            self.assertEqual(hit, "联名×", c)  # 残缺片段须归一化为可读的联动信号
+
+    def test_verdict_x_not_math(self):
+        # 数字乘法/规格写法不得被当成联名（× 两侧须是「名字」字符）
+        for c in ("整箱规格 500ml×2，限时特价", "满减叠加：2×3瓶更划算"):
+            _, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertNotEqual(ftype, "🧋 奶茶联名", c)
+
+    def test_verdict_other_link_words(self):
+        for c in ("古茗跨界合作，敦煌研究院主题杯套上线",
+                  "瑞幸联合出品《时光代理人》主题杯"):
+            ok, ftype, hit = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🧋 奶茶联名", c)
+            self.assertIn(hit, ("跨界", "联合出品"), c)
+
+    def test_verdict_charity_not_link(self):
+        # 公益合作不是联名：裸「携手/合作/联合」刻意不收，避免给联名区灌水
+        for c in ("奈雪携手中国乡村发展基金会，捐赠100万元助力乡村儿童",
+                  "霸王茶姬联合公益机构发起环保行动"):
+            _, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertNotEqual(ftype, "🧋 奶茶联名", c)
+
     def test_verdict_drink_section(self):
         ok, ftype, hit = P._milktea_verdict(
             "凭学生证认证【霸气学生卡】可得招牌饮品第2件半价券*1", self.deal, self.lot)
