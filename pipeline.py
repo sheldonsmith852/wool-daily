@@ -821,28 +821,23 @@ def fetch_milktea(browser=None):
             pcm = sync_playwright().start()
             browser = _launch_browser(pcm)
         pg = browser.new_page()
-        blocked = False  # 微博一旦出现登录墙/验证页，本轮后续请求直接跳过
+        blocked_o = False  # 官方路独立撞墙标志：仅跳过后续官方品牌，绝不牵连搜索兜底
         # ---- 第一路：品牌官微时间线（官宣第一手，质量最高 → 置信度 🟢）----
         # uid 必须逐个核对粉丝量与「微博认证」：m.weibo.cn/n/<昵称> 会重定向到同名
         # 山寨号（实测「瑞幸咖啡」「霸王茶姬」「茶百道」都撞到粉丝个位数的假号）。
+        # 注：m.weibo.cn 用户主页是 SPA，滚动会触发整页 DOM 重渲染、卡片节点整体失效，
+        # 故不滚动，只取首屏已渲染卡片（官宣/联名多在最新或置顶，足够）；
+        # 「买一送一」类门店促销主账号极少发，主要由第二路实时搜索兜底。
         for bname, uid in mc.get("brand_uids") or []:
-            if blocked:
+            if blocked_o:
                 break
             try:
                 pg.goto(f"https://m.weibo.cn/u/{uid}",
                         wait_until="domcontentloaded", timeout=25000)
                 pg.wait_for_timeout(3500)
-                # 官微主页为懒加载：下滑几次把更多微博加载进 DOM，
-                # 否则「买一送一」等稍靠后的促销微博可能在首屏之外被漏抓。
-                for _ in range(4):
-                    try:
-                        pg.mouse.wheel(0, 1000)
-                    except Exception:
-                        pass
-                    pg.wait_for_timeout(1000)
                 if _page_blocked(pg):
-                    blocked = True
-                    print("MILKTEA_BLOCKED", bname)
+                    blocked_o = True
+                    print("MILKTEA_BLOCKED_OFFICIAL", bname)
                     break
                 for tstr, txt, href in _wb_cards(pg):
                     if not href or len(txt) < 10:
@@ -879,8 +874,10 @@ def fetch_milktea(browser=None):
                 print("MILKTEA_RUN_ERR", bname, e)
                 continue
         # ---- 第二路：实时搜索兜底（覆盖官微未发/未收录的小品牌），置信度 🟡 ----
+        # 独立于官方路：官方路撞墙绝不跳过本路，否则「买一送一」等只能从搜索来的真羊毛会被连坐漏抓。
+        blocked_s = False
         for _, kw in mc["keywords"]:
-            if blocked:
+            if blocked_s:
                 break
             # type=61 = 实时流（按时间倒序）。综合流(type=1)按热度排，会返回多年前内容。
             cid = _up.quote("100103type=61&q=" + kw)
@@ -889,8 +886,8 @@ def fetch_milktea(browser=None):
                         wait_until="domcontentloaded", timeout=25000)
                 pg.wait_for_timeout(3000)
                 if _page_blocked(pg):
-                    blocked = True
-                    print("MILKTEA_BLOCKED", kw)
+                    blocked_s = True
+                    print("MILKTEA_BLOCKED_SEARCH", kw)
                     break
                 for c in pg.query_selector_all("div.card-wrap"):
                     wt = c.query_selector(".weibo-text")
