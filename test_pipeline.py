@@ -21,11 +21,16 @@ class TestClassify(unittest.TestCase):
             P.classify({"title": "加多宝凉茶", "detail": "", "source": "smzdm"}),
             "🥤 奶茶饮品")
 
-    def test_yangmaocun_milktea_to_ecoupon(self):
-        # 羊毛村奶茶线报改归「🛒 电商券」，并打上配额保护标记
+    def test_yangmaocun_milktea_back_to_drink(self):
+        # 羊毛村奶茶线报**回归**「🥤 奶茶饮品」（2026-09-16 口径），并打配额标记
         d = {"title": "瑞幸咖啡免费抽1万份饮品免单", "detail": "", "source": "ym2.cc"}
-        self.assertEqual(P.classify(d), "🛒 电商券")
+        self.assertEqual(P.classify(d), "🥤 奶茶饮品")
         self.assertTrue(d.get("_ym_milktea"))
+
+    def test_yangmaocun_mirror_too(self):
+        # 镜像站 ymnnc.com 同样回归奶茶区
+        d = {"title": "蜜雪冰城免单券", "detail": "", "source": "ymnnc.com"}
+        self.assertEqual(P.classify(d), "🥤 奶茶饮品")
 
     def test_force_type(self):
         self.assertEqual(
@@ -343,6 +348,54 @@ class TestEndDate(unittest.TestCase):
                     "type": "💰 支付立减", "confidence": "🟢"}
         out = P.select_deals([long_run, news], 30)
         self.assertEqual([d["title"] for d in out], ["今日真新闻", "长期活动"])
+
+
+class TestMilkTeaMerge(unittest.TestCase):
+    """奶茶饮品区：官微(🟢) 与羊毛村(🟡) 按发布时间混排，且羊毛村受配额限制。"""
+
+    @staticmethod
+    def _d(title, source, platform, date):
+        d = {"platform": platform, "source": source, "title": title,
+             "url": "http://u/" + title, "date": date, "type": "🥤 奶茶饮品",
+             "confidence": "🟡" if source == "ym2.cc" else "🟢"}
+        if source == "ym2.cc":
+            d["_ym_milktea"] = True
+        return d
+
+    @staticmethod
+    def _day(n):
+        return (_dt.date.today() - _dt.timedelta(days=n)).isoformat()
+
+    def test_two_sources_merged_by_date(self):
+        # 纯时间倒序：今天羊毛村要压过昨天/前天的官微，不能是「官微在前羊毛村在后」
+        deals = [self._d("奈雪前天", "milktea", "奈雪的茶", self._day(2)),
+                 self._d("羊毛村今天", "ym2.cc", "羊毛村", self._day(0)),
+                 self._d("喜茶昨天", "milktea", "喜茶", self._day(1))]
+        out = P.select_deals(deals, 30)
+        titles = [x["title"] for x in out if x["type"] == "🥤 奶茶饮品"]
+        self.assertEqual(titles, ["羊毛村今天", "喜茶昨天", "奈雪前天"])
+
+    def test_no_brand_priority_anymore(self):
+        # 高优品牌（奈雪/喜茶）不再置顶：同一天里羊毛村也能排在官微之前
+        deals = [self._d("奈雪今天", "milktea", "奈雪的茶", self._day(0)),
+                 self._d("羊毛村今天", "ym2.cc", "羊毛村", self._day(0))]
+        out = P.select_deals(deals, 30)
+        titles = [x["title"] for x in out if x["type"] == "🥤 奶茶饮品"]
+        self.assertEqual(sorted(titles), ["奈雪今天", "羊毛村今天"])
+        # 两者都必须在（不能因为羊毛村量大把官微挤空）
+
+    def test_yangmaocun_quota_caps_drink_section(self):
+        # 羊毛村 8 条（都是最近几天）+ 官微 2 条：奶茶区里羊毛村最多 5 条
+        deals = [self._d("官微A", "milktea", "喜茶", self._day(1)),
+                 self._d("官微B", "milktea", "霸王茶姬", self._day(2))]
+        deals += [self._d("羊毛村%d" % i, "ym2.cc", "羊毛村", self._day(i % 6))
+                  for i in range(8)]
+        out = P.select_deals(deals, 30)
+        drink = [x for x in out if x["type"] == "🥤 奶茶饮品"]
+        ym = [x for x in drink if x.get("_ym_milktea")]
+        off = [x for x in drink if not x.get("_ym_milktea")]
+        self.assertLessEqual(len(ym), P.get_select_cfg()["ym_milktea_quota"])
+        self.assertEqual(len(off), 2)  # 官微两条必须都在，没被挤空
 
 
 if __name__ == "__main__":

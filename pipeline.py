@@ -200,12 +200,16 @@ def classify(d):
             if kw.lower() in text:
                 if label == "🥤 奶茶饮品":
                     src = d.get("source")
-                    # 羊毛村奶茶线报改归「🛒 电商券」：这些线报仍可薅，只是不再进奶茶饮品区。
+                    # 羊毛村（ym2.cc/ymnnc.com）奶茶线报**回归**本区（2026-09-16 用户要求：
+                    # 之前改归「🛒 电商券」是矫枉过正，这些线报仍可薅且本就该在奶茶区）。
+                    # 打 _ym_milktea 标记，供两处配额使用：
+                    #   ① 羊毛村源内优先保奶茶线报（见 select_deals 源约束）
+                    #   ② 本区内限制羊毛村最多占 ym_milktea_quota 条，避免官微被挤空
                     if src in ("ym2.cc", "ymnnc.com"):
-                        d["_ym_milktea"] = True  # 选取时保留独立配额（见 select_deals）
-                        return "🛒 电商券"
-                    # 「🥤 奶茶饮品」只由微博官号（source=milktea）供内容：
-                    # 其他源命中奶茶词不再归此类，继续往下匹配（如什么值得买「加多宝凉茶」→📦 其他）。
+                        d["_ym_milktea"] = True
+                        return label
+                    # 其他非官号源（什么值得买等）命中奶茶词仍不归本类，继续往下匹配
+                    # （如什么值得买「加多宝凉茶」→📦 其他）。
                     if src != "milktea":
                         break
                 return label
@@ -663,7 +667,11 @@ MILKTEA_X = re.compile(_LINK_LEFT + r"\s*[×✕]\s*" + _LINK_RIGHT)
 # 只收必须带后续搭配的「联合出品」「联合推出」——那基本只在联名/定制语境出现。
 MILKTEA_LINK_WORD = re.compile(
     r"(联名|联动|(?<![A-Za-z])IP(?![A-Za-z])|合作款|跨界|联合出品|联合推出)")
-# 高优品牌：日报排序时这三家排在其他品牌之前，其后按发布时间倒序。
+# 高优品牌。**当前仅用于「抓取顺序」（brand_uids 列表顺序）与文档说明，
+# 不再参与排序** —— 2026-09-16 用户口径改为「奶茶两区纯发布时间倒序」，
+# 品牌置顶会让羊毛村条目恒在末尾、退化成两源叠加。
+# 若将来要恢复品牌优先，在 select_deals 里对本常量做 stable sort 即可
+# （注意必须让羊毛村条目不被压到末尾，即排序键要按「是否高优」而非「是否官微」）。
 # 名称必须与 brand_uids 里的品牌名一致（即条目的 platform 字段）。
 MILKTEA_TOP_BRANDS = ("奈雪的茶", "喜茶", "霸王茶姬")
 
@@ -1364,7 +1372,7 @@ SELECT_DEFAULTS = {
     "per_type": 10,                  # 每类展示上限（控制总量，优质优先）
     "max": 40,                       # 日报总条目上限（宁少勿滥）
     "smzdm_per_type": 5,             # 电商券（卖东西）类特别限量
-    "ym_ecoupon_quota": 5,           # 羊毛村奶茶线报（改归电商券）保留名额，防被什么值得买挤掉
+    "ym_milktea_quota": 5,           # 🥤奶茶饮品区内羊毛村线报上限，防官微被挤空
     "smzdm_cap": 10,                 # 什么值得买源级总上限（避免该源霸屏）
     "yangmaocun_cap": 20,            # 羊毛村最多展示条数
     "yangmaocun_max_age_days": 10,   # 羊毛村仅保留 N 天内有明确日期的线报
@@ -1433,8 +1441,8 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
         by_source[d["source"]].append(d)
 
     # 羊毛村（platform=羊毛村）配额：优先保奶茶线报，再按日期取最近 N 条。
-    # 奶茶线报改归「🛒 电商券」后仍是日报重点，若不优先会被同源更晚的线报挤出配额
-    # （羊毛村每日线报量很大，纯按日期排序时较早的奶茶线报挤不进前 20）。
+    # 奶茶线报回归「🥤 奶茶饮品」区后仍是日报重点，若不优先会被同源更晚的线报挤出
+    # 配额（羊毛村每日线报量很大，纯按日期排序时较早的奶茶线报挤不进前 20）。
     YM_CAP = sc["yangmaocun_cap"]
     ym_items = next((v for v in by_source.values()
                      if v and v[0].get("platform") == "羊毛村"), [])
@@ -1467,10 +1475,10 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             continue
         s = sorted(items, key=lambda d: d.get("date") or "0000-00-00",
                    reverse=True)
-        if items[0].get("source") == "milktea":
-            # 奶茶官微：先按日期倒序，再稳定排序把高优品牌（奈雪/喜茶/霸王茶姬）
-            # 提到最前——保底 2 条也优先给高优品牌，不被冷门品牌抢占版面。
-            s.sort(key=lambda d: 0 if d.get("platform") in MILKTEA_TOP_BRANDS else 1)
+        # 奶茶区一律按发布时间倒序（2026-09-16 用户口径）：**取消**高优品牌
+        # （奈雪/喜茶/霸王茶姬）置顶。羊毛村条目 platform=「羊毛村」不在高优名单内，
+        # 一旦保留品牌优先，结果必然是「官微在前、羊毛村在后」的叠加 ——
+        # 与「两源按时间混排」的要求直接相悖。s 已在上面按日期倒序排好。
         for d in s[:2]:
             guaranteed.append(d)
 
@@ -1481,20 +1489,26 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
     for d in capped:
         by_type[d["type"]].append(d)
 
-    # 奶茶两区排序：奈雪/喜茶/霸王茶姬 优先于其他品牌，其后按发布时间倒序。
-    # capped 已是日期倒序，stable sort 只调整品牌优先级，组内时间顺序保持不变。
+    # 奶茶两区：纯发布时间倒序（2026-09-16 用户口径，取消高优品牌置顶）。
+    # capped 已按 (date 倒序, date_end 沉底) 排好，但按 type 分桶后仍需显式再排：
+    # defaultdict 的遍历顺序只保证「首次出现顺序」，不保证等于原排序键。
     for _t in ("🥤 奶茶饮品", "🧋 奶茶联名"):
         if _t in by_type:
-            by_type[_t].sort(
-                key=lambda d: 0 if d.get("platform") in MILKTEA_TOP_BRANDS else 1)
+            by_type[_t].sort(key=lambda d: (d.get("date") or "0000-00-00",
+                                            0 if d.get("date_end") else 1),
+                             reverse=True)
 
-    # 🛒 电商券：拆成「羊毛村奶茶线报（由奶茶饮品改归而来）」与「什么值得买商品」两组，
-    # 前者先按配额保留——否则当日扎堆的什么值得买会把羊毛村线报整个挤掉。
-    _ec = by_type.get("🛒 电商券")
-    if _ec:
-        _ym_ec = [d for d in _ec if d.get("_ym_milktea")]
-        _other_ec = [d for d in _ec if not d.get("_ym_milktea")]
-        by_type["🛒 电商券"] = _ym_ec[:sc["ym_ecoupon_quota"]] + _other_ec
+    # 🥤 奶茶饮品：羊毛村线报（二手源 🟡）与官微（🟢）混排后，限制羊毛村最多占
+    # ym_milktea_quota 条。羊毛村每日奶茶线报量远大于官微（官微常 0–2 条），
+    # 不限量会把官微整块挤空、「只认官号」的口径名存实亡。
+    # 列表已是日期倒序，故 [:_q] 取到的就是最近的 q 条。
+    _mc = by_type.get("🥤 奶茶饮品")
+    if _mc:
+        _q = sc["ym_milktea_quota"]
+        _ym = [d for d in _mc if d.get("_ym_milktea")]
+        _keep = {id(x) for x in _ym[:_q]}
+        by_type["🥤 奶茶饮品"] = [d for d in _mc
+                                   if not d.get("_ym_milktea") or id(d) in _keep]
 
     out = []
     seen_ids = set()
@@ -1503,8 +1517,9 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             out.append(d)
             seen_ids.add(id(d))
 
+    # 电商券已不含羊毛村奶茶线报（回归奶茶饮品区），故不再额外加配额。
     type_cap = {**{t: sc["per_type"] for t in SELECT_PRIORITY},
-                "🛒 电商券": sc["smzdm_per_type"] + sc["ym_ecoupon_quota"]}
+                "🛒 电商券": sc["smzdm_per_type"]}
     for t in SELECT_PRIORITY:
         if len(out) >= sc["max"]:
             break
@@ -1522,6 +1537,18 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
             out.append(d)
             seen_ids.add(id(d))
             budget_t -= 1
+
+    # 收口：保证「同一类型内部」按发布时间倒序。
+    # 必需 —— 「每源保底 2 条」的 guaranteed 段先于 by_type 补充段入 out，跨段会
+    # 打乱时间序。实测：昨/前天的保底官微排到了今天羊毛村之前（两源混排要求落空）。
+    # 渲染按 type 分桶、组内取 out 的相对顺序，故只须保证组内有序即可；
+    # type 之间的相对次序用「首次出现序号」稳定保序，不影响既有展示。
+    _tord = {}
+    for d in out:
+        _tord.setdefault(d["type"], len(_tord))
+    out.sort(key=lambda d: (d.get("date") or "0000-00-00",
+                            0 if d.get("date_end") else 1), reverse=True)
+    out.sort(key=lambda d: _tord[d["type"]])  # 稳定：type 块保序，组内时间序保留
     return out[:sc["max"]]
 
 
