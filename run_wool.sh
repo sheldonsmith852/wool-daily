@@ -12,11 +12,25 @@ cd "$(dirname "$0")" || exit 1
 # 一直停在手动同步的 e1485f5，导致买一送一闸门从未上线）。
 #
 # 失败必须留痕，不能静默：实测服务器到 GitHub 的 HTTPS 会偶发 TLS 握手失败
-# （GnuTLS recv error -110），此时若用 `|| true` 吞掉，就会「以为在跑最新版、
-# 实际在跑旧版」——正是上面那个部署脱节 bug 的复发路径。故失败时把当前 HEAD
-# 版本写进日志，排查时能立刻看出当天跑的是哪个版本。
-if ! git pull --ff-only --quiet 2>>wool_log.txt; then
-  echo "[$(date '+%F %T')] WARN git pull 失败，本次跑的是本地旧代码 $(git rev-parse --short HEAD 2>/dev/null)" >> wool_log.txt
+# （GnuTLS recv error -110），严重时整条 443 连接超时（Connection timed out）——
+# 此时若用 `|| true` 吞掉，就会「以为在跑最新版、实际在跑旧版」。
+#
+# 2026-09-16 改为「直连失败 → 自动走国内镜像（ghproxy.net）」：腾讯云广州出口到 GitHub
+# HTTPS 长期不稳定，但 ghproxy.net 镜像可达，用它兜底后部署脱节不再复发。
+# 两次都失败才记 WARN 跑旧代码；每次运行都记 HEAD=<短 sha> 便于排查。
+MIRROR_URL="https://ghproxy.net/https://github.com/sheldonsmith852/wool-daily.git"
+_git_pull_ok=0
+if git pull --ff-only --quiet 2>>wool_log.txt; then
+  _git_pull_ok=1
+else
+  echo "[$(date '+%F %T')] WARN git pull 直连失败，尝试镜像 ghproxy.net..." >> wool_log.txt
+  if git pull --ff-only --quiet "$MIRROR_URL" master 2>>wool_log.txt; then
+    _git_pull_ok=1
+    echo "[$(date '+%F %T')] git pull 经镜像成功" >> wool_log.txt
+  fi
+fi
+if [ "$_git_pull_ok" -ne 1 ]; then
+  echo "[$(date '+%F %T')] WARN git pull 全部失败，本次跑的是本地旧代码 $(git rev-parse --short HEAD 2>/dev/null)" >> wool_log.txt
 fi
 echo "[$(date '+%F %T')] HEAD=$(git rev-parse --short HEAD 2>/dev/null)" >> wool_log.txt
 
