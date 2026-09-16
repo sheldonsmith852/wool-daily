@@ -47,6 +47,7 @@
   },
   "milktea": {
     "max_age_hours": 168,
+    "big_lottery_min": 10000,
     "brand_uids": [
       ["奈雪的茶", "5884674413"],
       ["喜茶", "2804387887"],

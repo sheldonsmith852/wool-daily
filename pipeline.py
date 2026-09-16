@@ -703,8 +703,29 @@ MILKTEA_LOTTERY_NEG = re.compile(
     r"送\d+位|请喝\d+杯|转.{0,3}关|关注.{0,5}(?:转发|抽)|转发.{0,5}抽|"
     r"锦鲤|中奖|抽中")
 
+# 大额抽奖豁免：抽奖闸门命中后，若名额（人/名/位/个/份/杯/券/张/名额）>= 阈值，
+# 视为「基本人人有份」的确定性羊毛，仍予收录（典型：瑞幸「抽10000人免单」「1万份免单」）。
+# 阈值可在 config.json 的 milktea.big_lottery_min 覆盖，默认 10000。
+# 约束：普通小额定抽（抽100位 / 抽9999名）仍按「根本抽不到我」丢弃；只有名额足够大才破例。
+# 单位词须紧跟数字（或「万」），并排除「元/减」等金额，避免「满10000减」「10000元」误判成名额。
+MILKTEA_BIG_LOTTERY_MIN = 10000
+_MILKTEA_QUOTA_RE = re.compile(
+    r"(\d{1,3}(?:\.\d+)?)\s*万"                                # 1.2万 / 10万
+    r"|(\d{1,10})\s*[+＋]?\s*(?:人|名|位|个|份|杯|券|张|名额)"    # 10000人 / 12000份 / 500名
+)
+def _lottery_quota(nt):
+    """从归一化正文提取抽奖名额数；无法判定返回 0。"""
+    m = _MILKTEA_QUOTA_RE.search(nt)
+    if not m:
+        return 0
+    if m.group(1):                          # 「万」写法：1万 = 10000
+        return int(float(m.group(1)) * 10000)
+    try:
+        return int(m.group(2))              # 纯数字写法
+    except (TypeError, ValueError):
+        return 0
 
-def _milktea_verdict(txt, deal_re, lottery_re):
+def _milktea_verdict(txt, deal_re, lottery_re, big_lottery_min=10000):
     """对单条候选帖做闸门裁决，返回 (是否收录, 分区, 命中词)。
 
     判定顺序是本模块最容易踩坑的地方，故抽成纯函数便于离线回归：
@@ -732,6 +753,12 @@ def _milktea_verdict(txt, deal_re, lottery_re):
             hit = "联名×"
         return True, "🧋 奶茶联名", hit
     if lottery_re.search(nt):
+        # 大额抽奖豁免：名额足够大（>= big_lottery_min）视为确定性羊毛，破例收录；
+        # 仍须命中价值闸门（免单/免费/买一送一…），避免把「抽10000人关注我」之类无奖互动收进来。
+        if _lottery_quota(nt) >= big_lottery_min:
+            m = deal_re.search(nt)
+            if m:
+                return True, "🥤 奶茶饮品", m.group(0)
         return False, "", ""
     m = deal_re.search(nt)
     if not m:
@@ -767,6 +794,8 @@ def get_milktea_cfg():
                               if ln else MILKTEA_LOTTERY_NEG)
     except Exception:
         cfg["_lottery_re"] = MILKTEA_LOTTERY_NEG
+    # 大额抽奖豁免阈值：config.json 的 milktea.big_lottery_min 可覆盖（默认 10000）。
+    cfg["big_lottery_min"] = u.get("big_lottery_min") or MILKTEA_BIG_LOTTERY_MIN
     if u.get("brand_uids") and isinstance(u["brand_uids"], list):
         cfg["brand_uids"] = [tuple(x) if isinstance(x, (list, tuple)) and len(x) == 2 else x
                              for x in u["brand_uids"]]
@@ -1016,7 +1045,8 @@ def fetch_milktea(browser=None):
                         continue
                     # 闸门裁决：联名主体优先收录（抽奖只是促互落款，不连坐）；
                     # 抽奖只做兜底排除；纯上新/品牌日常丢弃。顺序详见 _milktea_verdict。
-                    ok, ftype, hit = _milktea_verdict(txt, deal_re, lottery_re)
+                    ok, ftype, hit = _milktea_verdict(txt, deal_re, lottery_re,
+                                                     mc.get("big_lottery_min", 10000))
                     if not ok:
                         continue
                     # 这里不再套 topic_neg：那套负向词（头发/美甲/穿搭/宠物…）是给

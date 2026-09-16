@@ -99,6 +99,52 @@ class TestMilkteaGates(unittest.TestCase):
             ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
             self.assertFalse(ok, c)
 
+    def test_verdict_big_lottery_exempt(self):
+        # 大额抽奖豁免：抽奖闸门命中，但名额 >= 10000（人人有份级），且仍有真羊毛词 → 收录到奶茶饮品区。
+        # 覆盖瑞幸「抽好多人的免单」这类活动。
+        for c in ("转发抽10000位免单券，人人可参与",
+                  "关注+转发抽10000人免费喝瑞幸生椰拿铁",
+                  "抽10000名送免单，手慢无",
+                  "1万份免单，转发抽奖参与即得"):
+            ok, ftype, hit = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🥤 奶茶饮品", c)
+
+    def test_verdict_small_lottery_still_dropped(self):
+        # 小额抽奖（< 10000）仍按「根本抽不到我」丢弃，即便帖子里写了免单。
+        for c in ("转发抽9999位免单",
+                  "抽500名送免单券",
+                  "评论区揪100位送免单"):
+            ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertFalse(ok, c)
+
+    def test_verdict_big_lottery_no_real_deal_still_dropped(self):
+        # 名额虽大但无真羊毛词（只是拉互动），不得借豁免混进来。
+        ok, _, _ = P._milktea_verdict(
+            "转发抽10000人关注我并转发", self.deal, self.lot)
+        self.assertFalse(ok)
+
+    def test_verdict_big_lottery_threshold_edge(self):
+        # 边界：正好 10000 纳入，9999 丢弃（用 位 计数，确保触发抽奖闸门走豁免分支）。
+        self.assertTrue(
+            P._milktea_verdict("抽10000位免单", self.deal, self.lot)[0])
+        self.assertFalse(
+            P._milktea_verdict("抽9999位免单", self.deal, self.lot)[0])
+
+    def test_verdict_big_lottery_wan_unit(self):
+        # 「万」写法等同数值：1万=10000 纳入，0.5万=5000 丢弃。
+        # 用「转发抽…万份」确保触发抽奖闸门，再走名额豁免。
+        self.assertTrue(
+            P._milktea_verdict("转发抽免单，共1万份", self.deal, self.lot)[0])
+        self.assertFalse(
+            P._milktea_verdict("转发抽免单，仅0.5万份", self.deal, self.lot)[0])
+
+    def test_verdict_big_lottery_min_configurable(self):
+        # 阈值可经参数下调：把阈值设为 500，则 500 人也算大额纳入。
+        ok, _, _ = P._milktea_verdict(
+            "抽500名送免单", self.deal, self.lot, big_lottery_min=500)
+        self.assertTrue(ok)
+
     def test_verdict_new_product_dropped(self):
         # 纯上新没有羊毛价值（用户明确：上新这种对我没有意义）。
         for c in ("奈雪秋日特调「400次金桂米酿奶咖」，今日正式上线！400次现打咸芝酪…",
