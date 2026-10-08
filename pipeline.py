@@ -1156,8 +1156,30 @@ def fetch_icbc(browser=None):
     try:
         def _core(b):
             items = _pw_scrape(b, URL, JS, wait=1500, timeout=25000)
+            # —— 工行筛选：只留「确定性支付立减」，砍掉办卡/抽奖/纯宣传 ——
+            # 2026-10-08 用户反馈：工行整页活动太多且用不上。改动：
+            #   ① 只保留含「满N减/立减/减N元/返现/免年费」等硬优惠的条目；
+            #      办卡、抽奖、新户、达标、报名类不命中 KEEP，直接丢弃。
+            #   ② 限数：最多保留前 _max 条命中项（config.icbc.max，默认 8）。
+            # 调词优先改 config.json 的 icbc.keep_pos / icbc.max，不用碰代码。
+            try:
+                _cfg = load_config() or {}
+            except Exception:
+                _cfg = {}
+            _ic = (_cfg.get("icbc") or {}) if isinstance(_cfg, dict) else {}
+            _kp = _ic.get("keep_pos")
+            if _kp and isinstance(_kp, list):
+                ICBC_KEEP = _re.compile("(" + "|".join(_re.escape(w) for w in _kp) + ")")
+            else:
+                ICBC_KEEP = _re.compile(r"满\s*\d+|立减|减\s*\d+\s*元|至高减|最高减|返现|免年费")
+            _max = _ic.get("max") if isinstance(_ic.get("max"), int) and _ic.get("max") > 0 else 8
             today = _dt.date.today()
+            _kept = 0
             for it in items:
+                # 标题+上下文一起判断（活动的具体优惠常写在父节点文案里）
+                blob = (it.get("title", "") + " " + it.get("ctx", "")).strip()
+                if not ICBC_KEEP.search(blob):
+                    continue
                 raw = it.get("ctx", "")
                 m = DATE.search(raw)
                 # 银行优惠多为「常在售」，发布/生效日统一按今天计。
@@ -1192,7 +1214,10 @@ def fetch_icbc(browser=None):
                     "date_raw": d,
                     "date_end": end_iso,
                 })
-            print(f"ICBC_OK 抓取 {len(deals)} 条优惠活动")
+                _kept += 1
+                if _kept >= _max:
+                    break
+            print(f"ICBC_OK 抓取 {len(deals)} 条优惠活动（筛选后，上限{_max}）")
         if browser is None:
             with _own_browser() as b:
                 _core(b)

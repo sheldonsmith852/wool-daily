@@ -45,6 +45,9 @@
     "suning": {"appkey": "", "appsecret": "", "pid": ""},
     "vip": {"appkey": "", "appsecret": "", "pid": ""}
   },
+  "icbc": {
+    "max": 8
+  },
   "milktea": {
     "max_age_hours": 168,
     "big_lottery_min": 10000,
