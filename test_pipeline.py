@@ -118,6 +118,16 @@ class TestMilkteaGates(unittest.TestCase):
             ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
             self.assertFalse(ok, c)
 
+    def test_verdict_ren_small_lottery_dropped(self):
+        # 「人」此前不在抽奖闸门词表，导致「抽10个人送福利」被价值闸门(福利)误收进来。
+        # 补「抽\d+人」后，小额定抽（无论带免单/福利/周边）都应拦截丢弃；
+        # 大额（>=10000）免单走豁免照收，由 test_verdict_big_lottery_exempt 覆盖。
+        for c in ("转发抽10个人送免单福利券",
+                  "抽10人免费喝瑞幸，手气王得免单",
+                  "评论区抽8人送周边好礼"):
+            ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertFalse(ok, c)
+
     def test_verdict_big_lottery_no_real_deal_still_dropped(self):
         # 名额虽大但无真羊毛词（只是拉互动），不得借豁免混进来。
         ok, _, _ = P._milktea_verdict(
