@@ -703,6 +703,18 @@ MILKTEA_LOTTERY_NEG = re.compile(
     r"送\d+位|请喝\d+杯|转.{0,3}关|关注.{0,5}(?:转发|抽)|转发.{0,5}抽|"
     r"锦鲤|中奖|抽中")
 
+# 中奖公告负向闸门：抽奖「结果公示」类内容一律丢弃，且**前置**于联名闸门(①)。
+# 这类帖子正文常带「联名/周边/IP/×」字眼（「恭喜@小明 获得 奈雪×线条小狗 联名周边」、
+# 「奈雪×线条小狗 联名周边 中奖名单公布」），会被联名闸门(①)误收进联名区，
+# 但其本质是「抽奖结果公示」而非「联名活动预告」，用户根本拿不到，须前置拦截。
+# 仅匹配强信号（恭喜…获得/中奖名单/开奖结果），不误伤正常联名上新预告。
+# 词表可在 config.json 的 milktea.winner_neg 覆盖，调词不用改代码。
+MILKTEA_WINNER_ANNOUNCE = re.compile(
+    r"恭喜.{0,15}(获得|喜提|中奖|抽到|抽中|赢得|拿到|领取)"
+    r"|(中奖|获奖)名单|名单公布|名单公示|开奖结果|开奖公告"
+    r"|恭喜以下.{0,12}(位|名)"
+    r"|以下.{0,12}(位|名).{0,12}(用户|粉丝|朋友|宝子).{0,8}(获得|中奖)")
+
 # 大额抽奖豁免：抽奖闸门命中后，若名额（人/名/位/个/份/杯/券/张/名额）>= 阈值，
 # 视为「基本人人有份」的确定性羊毛，仍予收录（典型：瑞幸「抽10000人免单」「1万份免单」）。
 # 阈值可在 config.json 的 milktea.big_lottery_min 覆盖，默认 10000。
@@ -725,11 +737,15 @@ def _lottery_quota(nt):
     except (TypeError, ValueError):
         return 0
 
-def _milktea_verdict(txt, deal_re, lottery_re, big_lottery_min=10000):
+def _milktea_verdict(txt, deal_re, lottery_re, big_lottery_min=10000,
+                     winner_re=MILKTEA_WINNER_ANNOUNCE):
     """对单条候选帖做闸门裁决，返回 (是否收录, 分区, 命中词)。
 
     判定顺序是本模块最容易踩坑的地方，故抽成纯函数便于离线回归：
 
+      ⓪ **中奖公告前置拦截** → 丢。「恭喜X获得/中奖名单/开奖结果」这类
+         抽奖结果公示，正文常带联名字眼（恭喜获得XX联名周边），会被①误收进
+         联名区；但用户根本拿不到，且不走大额豁免，直接丢弃。
       ① **联名/联动帖直接收录** → 🧋 奶茶联名，不受抽奖闸门影响。
          官微的联名公告几乎都带「关注+转发抽N位」的促互落款，若把抽奖闸门
          放在最前面一刀切，会把整条联名误杀 —— 实测奈雪×明日方舟终末地(9/11)、
@@ -740,6 +756,9 @@ def _milktea_verdict(txt, deal_re, lottery_re, big_lottery_min=10000):
       ④ 其余（纯上新/品牌日常/代言）→ 丢。
     """
     nt = _norm_text(txt or "")
+    # ⓪ 中奖公告前置拦截：结果公示类，用户拿不到，且不走大额豁免，直接丢。
+    if winner_re.search(nt):
+        return False, "", ""
     # 文字词优先、× 形态兜底：正文里真写了「联名」时显示「联名」更自然，
     # 只有通篇没有联名词（如「茶百道 ×《天官赐福》」）才退到 × 形态。
     link_m = MILKTEA_LINK_WORD.search(nt) or MILKTEA_X.search(nt)
@@ -794,6 +813,13 @@ def get_milktea_cfg():
                               if ln else MILKTEA_LOTTERY_NEG)
     except Exception:
         cfg["_lottery_re"] = MILKTEA_LOTTERY_NEG
+    # 中奖公告负向闸门：config 可覆盖词表，未配时用代码内置正则（同上，只看 config 覆盖值）。
+    wn = u.get("winner_neg") or None
+    try:
+        cfg["_winner_re"] = (re.compile("(" + "|".join(re.escape(w) for w in wn) + ")")
+                             if wn else MILKTEA_WINNER_ANNOUNCE)
+    except Exception:
+        cfg["_winner_re"] = MILKTEA_WINNER_ANNOUNCE
     # 大额抽奖豁免阈值：config.json 的 milktea.big_lottery_min 可覆盖（默认 10000）。
     cfg["big_lottery_min"] = u.get("big_lottery_min") or MILKTEA_BIG_LOTTERY_MIN
     if u.get("brand_uids") and isinstance(u["brand_uids"], list):
@@ -1046,7 +1072,8 @@ def fetch_milktea(browser=None):
                     # 闸门裁决：联名主体优先收录（抽奖只是促互落款，不连坐）；
                     # 抽奖只做兜底排除；纯上新/品牌日常丢弃。顺序详见 _milktea_verdict。
                     ok, ftype, hit = _milktea_verdict(txt, deal_re, lottery_re,
-                                                     mc.get("big_lottery_min", 10000))
+                                                     mc.get("big_lottery_min", 10000),
+                                                     mc.get("_winner_re") or MILKTEA_WINNER_ANNOUNCE)
                     if not ok:
                         continue
                     # 这里不再套 topic_neg：那套负向词（头发/美甲/穿搭/宠物…）是给

@@ -128,6 +128,32 @@ class TestMilkteaGates(unittest.TestCase):
             ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
             self.assertFalse(ok, c)
 
+    def test_verdict_winner_announce_dropped(self):
+        # 中奖公告（抽奖结果公示）前置拦截：正文常带「联名/周边/×」会被①误收进联名区，
+        # 但用户根本拿不到，须丢弃且不走大额豁免。覆盖用户反馈的「恭喜XX获得周边」。
+        for c in ("恭喜@小明 获得 奈雪×线条小狗 联名周边",
+                  "奈雪×线条小狗 联名周边 中奖名单公布，以下10位用户获得",
+                  "茶百道×《天官赐福》联名 开奖结果：恭喜以下5位粉丝喜提花怜亚克力",
+                  "喜茶×原神 联名杯套 获奖名单公示",
+                  "恭喜以下20位用户获得 瑞幸×线条小狗 联名贴纸"):
+            ok, _, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertFalse(ok, c)
+
+    def test_verdict_winner_announce_not_immune_to_big_lottery(self):
+        # 即便中奖公告里写了「抽10000人」之类名额，结果公示本质仍丢弃（不走大额豁免）。
+        ok, _, _ = P._milktea_verdict(
+            "恭喜以下10000位用户获得 奈雪联名周边", self.deal, self.lot)
+        self.assertFalse(ok)
+
+    def test_verdict_real_link_launch_not_dropped(self):
+        # 正常联名上新预告（含促互落款）仍须收录进联名区，不被中奖公告闸门误伤。
+        for c in ("奈雪×@明日方舟终末地 联名活动，9月23日正式上线！关注并转发，抽20位喝联名茶饮",
+                  "与豚豚崽一起解锁松弛～关注＋转发，揪5位朋友送全套萌物周边！联名蔬果酸奶昔",
+                  "茶百道×《天官赐福》联名饮品上新，主题店限时开放"):
+            ok, ftype, _ = P._milktea_verdict(c, self.deal, self.lot)
+            self.assertTrue(ok, c)
+            self.assertEqual(ftype, "🧋 奶茶联名", c)
+
     def test_verdict_big_lottery_no_real_deal_still_dropped(self):
         # 名额虽大但无真羊毛词（只是拉互动），不得借豁免混进来。
         ok, _, _ = P._milktea_verdict(
