@@ -435,6 +435,40 @@ class TestEndDate(unittest.TestCase):
         self.assertEqual([d["title"] for d in out], ["今日真新闻", "长期活动"])
 
 
+class TestRenderPushPlus(unittest.TestCase):
+    """PushPlus 个人微信用列表式 markdown：必须不含 GFM 表格（PushPlus 不支持）。"""
+
+    @staticmethod
+    def _item(title, typ, is_new=False):
+        return ({
+            "platform": "P", "source": "s", "title": title,
+            "url": "http://u/x", "type": typ, "confidence": "🟢",
+            "date": _dt.date.today().isoformat(),
+        }, is_new)
+
+    def test_pushplus_has_no_table(self):
+        items = [self._item("喜茶买一送一", "🥤 奶茶饮品"),
+                 self._item("奈雪联名上新", "🧋 奶茶联名", is_new=True)]
+        out = P.render_pushplus_md(items, 7)
+        self.assertNotIn("|---", out)            # GFM 表格分隔线
+        self.assertNotIn("| 来源", out)           # 表格表头
+        self.assertIn("## 🥤 奶茶饮品", out)       # 分区标题
+        self.assertIn("- [喜茶买一送一]", out)     # 列表条目
+        self.assertIn("🆕", out)                  # 新条目标记
+
+    def test_norm_ws_collapses_newlines(self):
+        self.assertEqual(P._norm_ws("a\n\nb   c"), "a b c")
+        self.assertEqual(P._norm_ws("  前后空格  "), "前后空格")
+        self.assertEqual(P._norm_ws(""), "")
+
+    def test_render_cleans_multiline_title(self):
+        # 羊毛村标题常带真实换行（如「…测\\n\\n …」），必须压成单空格
+        dirty = "北京银行风评低保5测额也是低保10没注意征信测\n\n ..."
+        items = [self._item(dirty, "💰 支付立减")]
+        out = P.render_pushplus_md(items, 7)
+        self.assertIn("北京银行风评低保5测额也是低保10没注意征信测 ...", out)
+
+
 class TestMilkTeaMerge(unittest.TestCase):
     """奶茶饮品区：官微(🟢) 与羊毛村(🟡) 按发布时间混排，且羊毛村受配额限制。"""
 

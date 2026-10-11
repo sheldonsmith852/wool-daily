@@ -1680,7 +1680,7 @@ def render(items, max_age=MAX_AGE_DAYS):
         lines.append("|---|---|---|---|")
         for d, is_new in groups[t]:
             pub = pub_label(d)
-            title = ("🆕 " + d["title"]) if is_new else d["title"]
+            title = ("🆕 " + _norm_ws(d["title"])) if is_new else _norm_ws(d["title"])
             lines.append(
                 f"| {d['platform']} | {pub} | [{title}]({d['url']}) "
                 f"| {d['confidence']} |"
@@ -1715,7 +1715,7 @@ def render_html(items, max_age=MAX_AGE_DAYS):
                 "<tr>"
                 f"<td>{esc(d.get('platform', ''))}</td>"
                 f"<td>{esc(pub)}</td>"
-                f"<td><a href=\"{esc(d['url'])}\">{esc(d['title'])}</a></td>"
+                f"<td><a href=\"{esc(d['url'])}\">{esc(_norm_ws(d['title']))}</a></td>"
                 f"<td>{d['confidence']}</td>"
                 "</tr>"
             )
@@ -1743,7 +1743,7 @@ def render_bot_md(items, max_age=MAX_AGE_DAYS):
             continue
         lines = [f"## {t}（{len(groups[t])}）", ""]
         for d, is_new in groups[t]:
-            title = ("🆕 " + d["title"]) if is_new else d["title"]
+            title = ("🆕 " + _norm_ws(d["title"])) if is_new else _norm_ws(d["title"])
             lines.append(
                 f"- [{title}]({d['url']}) · {pub_label(d)} · {d['confidence']}"
             )
@@ -1752,6 +1752,48 @@ def render_bot_md(items, max_age=MAX_AGE_DAYS):
     if not blocks:
         return [header + "\n> 今日无符合条件的优惠。"]
     return [header + "\n".join(blocks)]
+
+
+def _norm_ws(s):
+    """把标题里的换行/多余空白压成单空格，避免 markdown 链接/列表里出现裸换行导致渲染错乱。
+
+    羊毛村等源抓到的标题常带真实换行（如「…测\\n\\n …」），直接写进 [标题](链接)
+    会撑破链接或显示成乱码；统一压成单空格最稳。"""
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def render_pushplus_md(items, max_age=MAX_AGE_DAYS):
+    """PushPlus 个人微信版：列表式 markdown。
+
+    ⚠️ 关键：PushPlus 的 markdown 模板基于基础 Markdown 语法（appinn.com 规范），
+    不支持 GFM 表格（`| | |` / `|---|`）。若沿用 render() 的表格版，微信里会直接显示
+    裸管道符和分隔线，看起来一团乱码（用户反馈的「结构乱七八糟」即此）。故这里改用
+    「## 分区 + 无序列表」结构，仅用基础 markdown 支持的元素（标题/列表/链接/引用），
+    保证微信里可读。本地 .md 备份仍用 render() 的表格版（在编辑器里更整齐）。
+    """
+    today = _dt.date.today().isoformat()
+    groups = {}
+    for d, is_new in items:
+        groups.setdefault(d["type"], []).append((d, is_new))
+    lines = [
+        f"# 深圳薅羊毛日报 · {today}", "",
+        f"> 🟢官方 🟡网站二手(点链接自核) ⚪线索。",
+        f"> 展示近 {max_age} 天在售优惠（过期自动淘汰）；🆕 为新上架。", "",
+    ]
+    for t in TYPE_ORDER:
+        if t not in groups:
+            continue
+        lines.append(f"## {t}（{len(groups[t])}）")
+        lines.append("")
+        for d, is_new in groups[t]:
+            title = ("🆕 " + _norm_ws(d["title"])) if is_new else _norm_ws(d["title"])
+            lines.append(
+                f"- [{title}]({d['url']}) · {pub_label(d)} · {d['confidence']}"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _load_env_file():
@@ -1968,6 +2010,7 @@ def main():
             except Exception:
                 pass
     for d in raw:
+        d["title"] = _norm_ws(d.get("title", ""))
         d["type"] = classify(d)
     filtered = [d for d in raw if d["type"] not in BLOCKED_TYPES]
     # 同一活动只留一条（官微联名区）：茶百道×天官赐福一天发 3 条会刷掉 3 行版面。
@@ -1992,13 +2035,14 @@ def main():
     with open(REPORT_PATH.replace(".md", ".html"), "w", encoding="utf-8") as f:
         f.write(html)
 
-    # 投递：PushPlus 主通道（markdown 表格，个人微信服务通知，无人值守）
+    # 投递：PushPlus 主通道（列表式 markdown，个人微信服务通知，无人值守）。
+    # 注意：PushPlus markdown 模板不支持 GFM 表格，故用 render_pushplus_md 而非 render()。
     bot_md = render_bot_md(items, max_age)
     full_md = "\n".join(bot_md)
     if os.environ.get("WOOL_DRYRUN"):
         # 本地预览模式：只生成文件、不推送（用于调试/确认）
         print("DRY_RUN: 跳过推送")
-    elif not send_pushplus(md, f"深圳薅羊毛日报 · {today}"):
+    elif not send_pushplus(render_pushplus_md(items, max_age), f"深圳薅羊毛日报 · {today}"):
         # 备用：企业微信群机器人 webhook；两者都失败则落盘告警
         if not send_webhook(full_md):
             notify_failure("主通道 PushPlus 与备用 webhook 均未送达，日报丢失")
