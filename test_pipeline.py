@@ -435,8 +435,8 @@ class TestEndDate(unittest.TestCase):
         self.assertEqual([d["title"] for d in out], ["今日真新闻", "长期活动"])
 
 
-class TestRenderPushPlus(unittest.TestCase):
-    """PushPlus 个人微信用列表式 markdown：必须不含 GFM 表格（PushPlus 不支持）。"""
+class TestRenderTable(unittest.TestCase):
+    """表格单元格安全：脏标题（换行/竖线）绝不能劈裂表格，否则其后分区全跟着乱码。"""
 
     @staticmethod
     def _item(title, typ, is_new=False):
@@ -446,27 +446,44 @@ class TestRenderPushPlus(unittest.TestCase):
             "date": _dt.date.today().isoformat(),
         }, is_new)
 
-    def test_pushplus_has_no_table(self):
-        items = [self._item("喜茶买一送一", "🥤 奶茶饮品"),
-                 self._item("奈雪联名上新", "🧋 奶茶联名", is_new=True)]
-        out = P.render_pushplus_md(items, 7)
-        self.assertNotIn("|---", out)            # GFM 表格分隔线
-        self.assertNotIn("| 来源", out)           # 表格表头
-        self.assertIn("## 🥤 奶茶饮品", out)       # 分区标题
-        self.assertIn("- [喜茶买一送一]", out)     # 列表条目
-        self.assertIn("🆕", out)                  # 新条目标记
+    @staticmethod
+    def _rows(out):
+        """取出表格数据行（跳过表头与分隔线）。"""
+        return [ln for ln in out.splitlines()
+                if ln.startswith("|") and "---" not in ln and "来源" not in ln]
 
-    def test_norm_ws_collapses_newlines(self):
-        self.assertEqual(P._norm_ws("a\n\nb   c"), "a b c")
-        self.assertEqual(P._norm_ws("  前后空格  "), "前后空格")
-        self.assertEqual(P._norm_ws(""), "")
-
-    def test_render_cleans_multiline_title(self):
-        # 羊毛村标题常带真实换行（如「…测\\n\\n …」），必须压成单空格
+    def test_multiline_title_does_not_split_row(self):
+        # 羊毛村标题常带真实换行：不净化的话一行被劈成两行，表格当场崩，
+        # 后面所有分区跟着变乱码（用户反馈的「表格偶尔导致后面乱了」）。
         dirty = "北京银行风评低保5测额也是低保10没注意征信测\n\n ..."
-        items = [self._item(dirty, "💰 支付立减")]
-        out = P.render_pushplus_md(items, 7)
-        self.assertIn("北京银行风评低保5测额也是低保10没注意征信测 ...", out)
+        items = [self._item(dirty, "💰 支付立减"),
+                 self._item("后面这条必须还正常", "🛒 电商券")]
+        rows = self._rows(P.render(items, 7))
+        self.assertEqual(len(rows), 2)                       # 没被劈成更多行
+        for r in rows:
+            self.assertTrue(r.startswith("|") and r.rstrip().endswith("|"), r)
+        self.assertIn("北京银行风评低保5测额也是低保10没注意征信测 ...", rows[0])
+
+    def test_pipe_in_title_does_not_add_column(self):
+        # 竖线会让该行凭空多出一列 → 行结构错位
+        items = [self._item("A|B 优惠", "🥤 奶茶饮品")]
+        row = self._rows(P.render(items, 7))[0]
+        self.assertEqual(row.count("|"), 5)                  # 4 列恰好 5 个分隔符
+
+    def test_md_cell_basics(self):
+        self.assertEqual(P._md_cell("a\n\nb   c"), "a b c")
+        self.assertEqual(P._md_cell("  前后空格  "), "前后空格")
+        self.assertEqual(P._md_cell(""), "")
+        self.assertEqual(P._md_cell("A|B"), "A｜B")          # 竖线转全角
+        self.assertEqual(P._md_cell("[x]"), "［x］")          # 方括号转全角
+
+    def test_table_header_intact(self):
+        # 表格结构本身保持不变（用户要的就是表格版）
+        items = [self._item("正常标题", "🥤 奶茶饮品", is_new=True)]
+        out = P.render(items, 7)
+        self.assertIn("| 来源 | 发布 | 标题 | 置信 |", out)
+        self.assertIn("|---|---|---|---|", out)
+        self.assertIn("🆕", out)
 
 
 class TestMilkTeaMerge(unittest.TestCase):
