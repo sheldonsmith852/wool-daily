@@ -264,6 +264,52 @@ class TestMilkteaGates(unittest.TestCase):
         self.assertNotIn("抽", t)
 
 
+class TestHardDealExemption(unittest.TestCase):
+    """抽奖落款不连坐主体：剥掉落款句后仍有「确定性硬羊毛」则收录。"""
+
+    # 真实样本：奈雪 10-15。主体是确定性买一送一，却因含「即可参与抽奖」被整条误杀。
+    NAIXUE_BOGO = (
+        "奈雪暖暖现烤屋营业啦，【暖暖现烤系列】新品「烤布蕾红苹果」，今日上新买一送一！ "
+        "🍮关注+转发，即可参与抽奖，揪\U0001F51F位朋友送奈雪100元心意卡，尝鲜新品。")
+
+    @classmethod
+    def setUpClass(cls):
+        cfg = P.get_milktea_cfg()
+        cls.deal = cfg["_deal_re"]
+        cls.lot = cfg["_lottery_re"]
+        cls.win = cfg.get("_winner_re") or P.MILKTEA_WINNER_ANNOUNCE
+        cls.minq = cfg["big_lottery_min"]
+
+    def _v(self, txt):
+        return P._milktea_verdict(txt, self.deal, self.lot, self.minq, self.win)
+
+    def test_bogo_with_lottery_footer_is_kept(self):
+        ok, ftype, hit = self._v(self.NAIXUE_BOGO)
+        self.assertTrue(ok, "含抽奖落款的确定性买一送一必须收录")
+        self.assertEqual(ftype, "🥤 奶茶饮品")
+        self.assertIn("买一送一", hit)
+
+    def test_pure_lottery_still_dropped(self):
+        # 奖品语境（免单券/周边）不得被豁免放回 —— 2026-10-08 用户投诉过
+        for c in ("关注 @古茗茶饮 +转发，抽10位，送黑糖珍珠牛乳免单券",
+                  "\U0001F389关注+转发，抽5位送限定周边一套",
+                  "新品今日上新，关注+转发抽10位送同款"):
+            ok, _, _ = self._v(c)
+            self.assertFalse(ok, c)
+
+    def test_deterministic_promos_kept(self):
+        for c in ("全场饮品买一送一！转发抽5位送周边",
+                  "10月16日起第二杯半价，关注+转发揪5位送贴纸",
+                  "全场8折限时三天，转发抽10位送杯子"):
+            ok, _, _ = self._v(c)
+            self.assertTrue(ok, c)
+
+    def test_big_lottery_exemption_unaffected(self):
+        # 既有「名额 >= 10000 的免单」豁免不受影响
+        ok, _, _ = self._v("抽10000位免单，人人可参与")
+        self.assertTrue(ok)
+
+
 class TestNormDate(unittest.TestCase):
     def test_cn(self):
         self.assertEqual(P.norm_date("2026年8月1日")[0], "2026-08-01")
