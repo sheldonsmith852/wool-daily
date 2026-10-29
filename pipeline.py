@@ -153,8 +153,11 @@ def age_label(d):
         age = (_dt.date.today() - _dt.date.fromisoformat(iso)).days
     except ValueError:
         return "日期未知"
-    if age <= 0:
+    if age == 0:
         return "今天"
+    if age < 0:
+        # 未来日期（活动预告/开馆日）不能显示成「今天」——那会让读者以为已经生效。
+        return f"{-age}天后"
     if age == 1:
         return "昨天"
     return f"{age}天前"
@@ -1349,6 +1352,10 @@ def fetch_bendibao(browser=None):
     try:
         def _core(b):
             items = _pw_scrape(b, URL, JS, wait=2000, timeout=25000)
+            # 同一篇文章在首页常出现多次（不同板块、锚文本长短不一），标题不同 → 哈希不同，
+            # 若只靠全局哈希去重会重复上榜（实测 1015186/1015188/1015189 各出两条）。
+            # 这里按 URL 收敛，保留标题最完整（最长）的那条。
+            by_url = {}
             for it in items:
                 raw = it["title"]
                 # 显示标题：压平所有空白（含换行）为单行，避免表格样式错乱/标题被内部换行截断
@@ -1363,7 +1370,12 @@ def fetch_bendibao(browser=None):
                     continue  # 招聘/考试/教育类民生专题，明确排除
                 # 日期：优先 URL 路径段（.../2026812/ → 2026-08-12），否则回退上下文文本
                 d = norm_date_url(it["url"]) or norm_date(it.get("ctx", ""))[0]
-                deals.append({
+                old = by_url.get(it["url"])
+                if old is not None:
+                    if len(t) > len(old["title"]):
+                        old["title"] = t
+                    continue
+                item = {
                     "platform": "深圳本地宝",
                     "category": "深圳活动",
                     "city": "深圳",
@@ -1375,7 +1387,9 @@ def fetch_bendibao(browser=None):
                     "date": d,
                     "date_raw": d,
                     "_force_type": "🎟️ 深圳活动",
-                })
+                }
+                by_url[it["url"]] = item
+                deals.append(item)
             print(f"BENDBAO_OK 抓取 {len(deals)} 条深圳活动")
         if browser is None:
             with _own_browser() as b:
@@ -1641,6 +1655,29 @@ def select_deals(deals, max_age_days=MAX_AGE_DAYS):
         _keep = {id(x) for x in _ym[:_q]}
         by_type["🥤 奶茶饮品"] = [d for d in _mc
                                    if not d.get("_ym_milktea") or id(d) in _keep]
+
+    # URL 兜底去重：同一篇文章可能被同一源的不同板块抓到（锚文本长短不同 → 标题不同 →
+    # 「来源+标题+链接」哈希不同），单靠哈希挡不住。实测本地宝首页 1015186/1015188/
+    # 1015189 各出两条，日报里就成了重复行。这里按链接收敛，保留标题最完整的那条。
+    def _collapse_by_url(items):
+        best, order = {}, []
+        for d in items:
+            u = (d.get("url") or "").rstrip("/")
+            if not u:
+                order.append(d)
+                continue
+            prev = best.get(u)
+            if prev is None:
+                best[u] = d
+                order.append(d)
+            elif len(d.get("title") or "") > len(prev.get("title") or ""):
+                order[order.index(prev)] = d
+                best[u] = d
+        return order
+
+    guaranteed = _collapse_by_url(guaranteed)
+    for _t in list(by_type):
+        by_type[_t] = _collapse_by_url(by_type[_t])
 
     out = []
     seen_ids = set()

@@ -379,6 +379,18 @@ class TestSelectDeals(unittest.TestCase):
         out = P.select_deals(deals, 30)
         self.assertEqual(len(out), 0)
 
+    def test_same_url_deduped(self):
+        # 回归（2026-10-29）：同一篇文章在首页多处出现、标题略有差异 → 哈希不同，
+        # 旧逻辑会重复上榜（实测本地宝 1015186/1015188/1015189 各出两条）。
+        today = _dt.date.today().isoformat()
+        a = {"platform": "深圳本地宝", "source": "bendibao", "type": "🎟️ 深圳活动",
+             "date": today, "title": "前海博物馆开馆", "url": "http://x/1015186.htm"}
+        b = dict(a, title="前海博物馆开馆 首批开放4个免费展览")  # 标题不同、链接相同
+        out = P.select_deals([a, b], 30)
+        self.assertEqual(len(out), 1)
+        # 保留标题更完整的那条
+        self.assertEqual(out[0]["title"], "前海博物馆开馆 首批开放4个免费展览")
+
 
 class TestDedupSameEvent(unittest.TestCase):
     """官微「同一活动只留一条」：判据是品牌+联名对象专名，不是 url（同一活动是多条微博）。"""
@@ -463,9 +475,10 @@ class TestEndDate(unittest.TestCase):
         self.assertEqual(P.pub_label({}), "— · 日期未知")
 
     def test_end_date_not_shown_as_today(self):
-        # 回归：早前未来日期会被 age_label 判成「今天」，显示成「12-31 · 今天」
+        # 回归：未来日期（活动预告/开馆日）不能显示成「今天」，否则读者以为已生效
         d = {"date": "2026-12-31"}
-        self.assertEqual(P.age_label(d), "今天")          # 旧行为（仅 age_label 层）
+        self.assertNotEqual(P.age_label(d), "今天")
+        self.assertTrue(P.age_label(d).endswith("天后"))
         d2 = {"date": _dt.date.today().isoformat(), "date_end": "2026-12-31"}
         self.assertNotIn("今天", P.pub_label(d2))          # 新行为：不再冒充今天
 
